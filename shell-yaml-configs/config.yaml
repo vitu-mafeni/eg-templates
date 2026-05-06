@@ -1,0 +1,188 @@
+proxy:
+  secretToken: "79044be905ddf54c21eb22b585f3b2b1f4679c972fcb6f479eeec9d8dfad4ea7"
+  service:
+    type: NodePort
+    nodePorts:
+      http: 30080
+      https: 30443
+
+hub:
+  config:
+    JupyterHub:
+      authenticator_class: oauthenticator.generic.GenericOAuthenticator
+
+    GenericOAuthenticator:
+      # ── Keycloak OIDC endpoints ──────────────────────────────
+      # Replace 192.168.3.234 with your node IP or Keycloak ingress hostname
+      client_id: "jupyterhub-client"
+      client_secret: "jupyterhub-secret-changeme"
+      oauth_callback_url: "http://192.168.3.234:30080/hub/oauth_callback"
+      authorize_url: "http://192.168.3.234:30090/realms/jupyterhub/protocol/openid-connect/auth"
+      token_url: "http://192.168.3.234:30090/realms/jupyterhub/protocol/openid-connect/token"
+      userdata_url: "http://192.168.3.234:30090/realms/jupyterhub/protocol/openid-connect/userinfo"
+      logout_redirect_url: "http://192.168.3.234:30090/realms/jupyterhub/protocol/openid-connect/logout"
+
+      # ── Token claims ─────────────────────────────────────────
+      username_claim: "preferred_username"
+      userdata_params:
+        state: state
+      scope:
+        - openid
+        - profile
+        - email
+        # - groups
+
+      # ── Group sync ───────────────────────────────────────────
+      # Groups from Keycloak token are synced to JupyterHub groups
+      # which drive the profile_list filtering below
+      claim_groups_key: "groups"
+      manage_groups: true
+
+      # ── Access control ───────────────────────────────────────
+      # Only users in at least one of these groups can log in
+      allowed_groups:
+        - cpu-users
+        - gpu-users
+        - gpu-power-users
+        - researchers
+
+      # Admin users — can be Keycloak group or explicit list
+      admin_users:
+        - adminuser1
+        - adminuser2
+
+  # extraConfig:
+  #   profileAccess: |
+  #     from oauthenticator.generic import GenericOAuthenticator
+
+  #     # ── All available kernel profiles ───────────────────────
+  #     # display_name shown in JupyterLab launcher
+  #     # kubespawner_override sets the gateway kernel name
+  #     ALL_PROFILES = [
+  #       {
+  #         "display_name": "Python (CPU Small — 2 CPU / 4Gi)",
+  #         "slug": "cpu-small",
+  #         "kubespawner_override": {
+  #           "environment": {"JUPYTER_GATEWAY_KERNEL_NAME": "cpu-small"}
+  #         }
+  #       },
+  #       {
+  #         "display_name": "Python (CPU Large — 8 CPU / 16Gi)",
+  #         "slug": "cpu-large",
+  #         "kubespawner_override": {
+  #           "environment": {"JUPYTER_GATEWAY_KERNEL_NAME": "cpu-large"}
+  #         }
+  #       },
+  #       {
+  #         "display_name": "PyTorch GPU (Quarter — 25% memory)",
+  #         "slug": "pytorch-gpu-quarter",
+  #         "kubespawner_override": {
+  #           "environment": {"JUPYTER_GATEWAY_KERNEL_NAME": "pytorch-gpu-quarter"}
+  #         }
+  #       },
+  #       {
+  #         "display_name": "PyTorch GPU (Half — 50% memory)",
+  #         "slug": "pytorch-gpu-half",
+  #         "kubespawner_override": {
+  #           "environment": {"JUPYTER_GATEWAY_KERNEL_NAME": "pytorch-gpu-half"}
+  #         }
+  #       },
+  #       {
+  #         "display_name": "PyTorch GPU (Dedicated — full GPU)",
+  #         "slug": "pytorch-gpu-dedicated",
+  #         "kubespawner_override": {
+  #           "environment": {"JUPYTER_GATEWAY_KERNEL_NAME": "pytorch-gpu-dedicated"}
+  #         }
+  #       },
+  #       {
+  #         "display_name": "TensorFlow GPU (Quarter — 25% memory)",
+  #         "slug": "tf-gpu-quarter",
+  #         "kubespawner_override": {
+  #           "environment": {"JUPYTER_GATEWAY_KERNEL_NAME": "tf-gpu-quarter"}
+  #         }
+  #       },
+  #       {
+  #         "display_name": "TensorFlow GPU (Half — 50% memory)",
+  #         "slug": "tf-gpu-half",
+  #         "kubespawner_override": {
+  #           "environment": {"JUPYTER_GATEWAY_KERNEL_NAME": "tf-gpu-half"}
+  #         }
+  #       },
+  #       {
+  #         "display_name": "TensorFlow GPU (Dedicated — full GPU)",
+  #         "slug": "tf-gpu-dedicated",
+  #         "kubespawner_override": {
+  #           "environment": {"JUPYTER_GATEWAY_KERNEL_NAME": "tf-gpu-dedicated"}
+  #         }
+  #       },
+  #     ]
+
+  #     # ── Group → allowed profiles mapping ────────────────────
+  #     GROUP_PROFILES = {
+  #       "cpu-users": [
+  #         "cpu-small",
+  #         "cpu-large",
+  #       ],
+  #       "gpu-users": [
+  #         "cpu-small",
+  #         "cpu-large",
+  #         "pytorch-gpu-quarter",
+  #         "tf-gpu-quarter",
+  #       ],
+  #       "gpu-power-users": [
+  #         "cpu-small",
+  #         "cpu-large",
+  #         "pytorch-gpu-quarter",
+  #         "pytorch-gpu-half",
+  #         "tf-gpu-quarter",
+  #         "tf-gpu-half",
+  #       ],
+  #       "researchers": [
+  #         "cpu-small",
+  #         "cpu-large",
+  #         "pytorch-gpu-quarter",
+  #         "pytorch-gpu-half",
+  #         "pytorch-gpu-dedicated",
+  #         "tf-gpu-quarter",
+  #         "tf-gpu-half",
+  #         "tf-gpu-dedicated",
+  #       ],
+  #     }
+
+  #     async def get_user_profiles(spawner):
+  #         """Return only the profiles the user is allowed to use
+  #         based on their Keycloak group membership."""
+  #         user_groups = {g.name for g in spawner.user.groups}
+  #         allowed_slugs = set()
+
+  #         for group, slugs in GROUP_PROFILES.items():
+  #             if group in user_groups:
+  #                 allowed_slugs.update(slugs)
+
+  #         # Fallback: everyone gets cpu-small
+  #         if not allowed_slugs:
+  #             allowed_slugs = {"cpu-small"}
+
+  #         return [p for p in ALL_PROFILES if p["slug"] in allowed_slugs]
+
+  #     c.KubeSpawner.profile_list = get_user_profiles
+
+singleuser:
+  defaultUrl: "/lab"
+  profileList: []
+  extraEnv:
+    JUPYTER_GATEWAY_URL: "http://enterprise-gateway.enterprise-gateway.svc.cluster.local:8888"
+    JUPYTER_GATEWAY_WS_URL: "ws://enterprise-gateway.enterprise-gateway.svc.cluster.local:8888"
+    JUPYTER_GATEWAY_REQUEST_TIMEOUT: "300"
+    JUPYTER_GATEWAY_CONNECT_TIMEOUT: "120"
+    JUPYTER_GATEWAY_WS_PING_INTERVAL: "30"
+    KERNEL_SERVICE_ACCOUNT_NAME: "enterprise-gateway-sa"
+  cmd: ["jupyterhub-singleuser"]
+  image:
+    name: vitu1/jupyterhub-singleuser
+    tag: "eg-compat-oidc"
+  storage:
+    type: dynamic
+
+ingress:
+  enabled: false
