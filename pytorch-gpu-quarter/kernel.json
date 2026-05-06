@@ -1,0 +1,28 @@
+{
+  "language": "python",
+  "display_name": "PyTorch GPU (Quarter — 25% memory / 25% cores)",
+  "metadata": {
+    "process_proxy": {
+      "class_name": "enterprise_gateway.services.processproxies.k8s.KubernetesProcessProxy",
+      "config": { "image_name": "elyra/kernel-py:3.2.3" }
+    },
+    "debugger": true
+  },
+  "env": {
+    "KERNEL_GPU_MEM_PERCENTAGE": "25",
+    "KERNEL_GPU_CORES": "25",
+    "KERNEL_CPUS": "2",
+    "KERNEL_MEMORY": "8Gi",
+    "KERNEL_CPUS_LIMIT": "4",
+    "KERNEL_MEMORY_LIMIT": "16Gi",
+    "IPYTHONDIR": "/opt/custom_kernels/ipython_config"
+  },
+  "argv": [
+    "python",
+    "/usr/local/share/jupyter/kernels/pytorch-gpu-quarter/launch_kubernetes.py",
+    "--RemoteProcessProxy.kernel-id", "{kernel_id}",
+    "--RemoteProcessProxy.port-range", "{port_range}",
+    "--RemoteProcessProxy.response-address", "{response_address}",
+    "--RemoteProcessProxy.public-key", "{public_key}"
+  ]
+}

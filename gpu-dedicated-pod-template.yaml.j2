@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ kernel_pod_name }}"
+  namespace: "{{ kernel_namespace }}"
+  labels:
+    kernel_id: "{{ kernel_id }}"
+    app: enterprise-gateway
+    component: kernel
+    source: kernel-pod.yaml
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+spec:
+  schedulerName: hami-scheduler
+  restartPolicy: Never
+  serviceAccountName: "{{ kernel_service_account_name }}"
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"
+  nodeSelector:
+    hardware-type: gpu
+  {% if kernel_uid is defined or kernel_gid is defined %}
+  securityContext:
+    {% if kernel_uid is defined %}
+    runAsUser: {{ kernel_uid | int }}
+    {% endif %}
+    {% if kernel_gid is defined %}
+    runAsGroup: {{ kernel_gid | int }}
+    {% endif %}
+    fsGroup: 100
+  {% endif %}
+  volumes:
+  - name: custom-startup-scripts
+    emptyDir: {}
+  - name: gpu-enforcer-vol
+    configMap:
+      name: gpu-enforcer-script
+      defaultMode: 0755
+  {% if kernel_volumes %}
+    {% for volume in kernel_volumes %}
+  - {{ volume }}
+    {% endfor %}
+  {% endif %}
+  initContainers:
+  - name: install-gpu-enforcer
+    image: busybox:1.36
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        mkdir -p /opt/custom_kernels/ipython_config/profile_default/startup
+        cp /mnt/enforcer/00-enforce-limits.py \
+           /opt/custom_kernels/ipython_config/profile_default/startup/00-enforce-limits.py
+        chmod 755 /opt/custom_kernels/ipython_config/profile_default/startup/00-enforce-limits.py
+    volumeMounts:
+    - name: custom-startup-scripts
+      mountPath: /opt/custom_kernels
+    - name: gpu-enforcer-vol
+      mountPath: /mnt/enforcer
+      readOnly: true
+  containers:
+  - image: "{{ kernel_image }}"
+    name: "{{ kernel_pod_name }}"
+    env: []
+    resources:
+      limits:
+        cpu: "{{ kernel_cpus_limit | default('16') }}"
+        memory: "{{ kernel_memory_limit | default('64Gi') }}"
+        # Requests exactly 1 full physical GPU - no percentage cap.
+        # HAMi allocates the entire device exclusively to this pod.
+        nvidia.com/gpu: "1"
+      requests:
+        cpu: "{{ kernel_cpus | default('8') }}"
+        memory: "{{ kernel_memory | default('32Gi') }}"
+        nvidia.com/gpu: "1"
+    {% if kernel_working_dir %}
+    workingDir: "{{ kernel_working_dir }}"
+    {% endif %}
+    volumeMounts:
+    - name: custom-startup-scripts
+      mountPath: /opt/custom_kernels
+    {% if kernel_volume_mounts %}
+      {% for volume_mount in kernel_volume_mounts %}
+    - {{ volume_mount }}
+      {% endfor %}
+    {% endif %}

@@ -1,0 +1,110 @@
+global:
+  rbac: true
+  imagePullSecrets: []
+  commonLabels: {}
+
+image: vitu1/enterprise-gateway:3.2.3
+imagePullPolicy: IfNotPresent
+
+service:
+  type: "NodePort"
+  externalIPs:
+    k8sMasterPublicIP: ''
+  ports:
+    - name: "http"
+      port: 8888
+      targetPort: 8888
+    - name: "http-response"
+      port: 8877
+      targetPort: 8877
+
+deployment:
+  enabled: true
+  serviceAccountName: 'enterprise-gateway-sa'
+  terminationGracePeriodSeconds: 30
+  annotations: {}
+  resources: {}
+  replicas: 1
+  tolerations: []
+  affinity: {}
+  nodeSelector: {}
+  extraEnv:
+    EG_INHERITED_ENVS: "PATH"
+
+logLevel: DEBUG
+mirrorWorkingDirs: false
+authToken:
+
+kernel:
+  clusterRole: kernel-controller
+  shareGatewayNamespace: true
+  launchTimeout: 300
+  cullIdleTimeout: 3600
+  cullConnected: true
+  allowedKernels:
+    # ── built-in kernels (from EG image) ──────────────────────
+    - python3
+    - r_kubernetes
+    - python_kubernetes
+    - python_tf_kubernetes
+    - python_tf_gpu_kubernetes
+    - scala_kubernetes
+    - spark_r_kubernetes
+    - spark_python_kubernetes
+    - spark_scala_kubernetes
+    - spark_python_operator
+    # ── CPU profiles ──────────────────────────────────────────
+    - cpu-small
+    - cpu-large
+    # ── PyTorch GPU profiles ───────────────────────────────────
+    - pytorch-gpu-quarter
+    - pytorch-gpu-half
+    - pytorch-gpu-dedicated
+    # ── TensorFlow GPU profiles ────────────────────────────────
+    - tf-gpu-quarter
+    - tf-gpu-half
+    - tf-gpu-dedicated
+  defaultKernelName: python3
+
+kernelspecs:
+  image: vitu1/enterprise-gateway-kernelspecs:2.0.0
+  imagePullPolicy: Always
+
+nfs:
+  enabled: false
+  internalServerIPAddress:
+
+kernelspecsPvc:
+  enabled: false
+  name:
+
+ingress:
+  enabled: false
+  hostName: ""
+  pathType: "Prefix"
+  path: "/"
+  annotations: {}
+
+kip:
+  enabled: true
+  serviceAccountName: 'kernel-image-puller-sa'
+  serviceName: enterprise-gateway
+  server:
+    protocol: http
+    port: 8888
+    validate_cert: false
+  podSecurityPolicy:
+    create: false
+    annotations: {}
+  image: elyra/kernel-image-puller:3.2.3
+  imagePullPolicy: IfNotPresent
+  pullPolicy: IfNotPresent
+  interval: 300
+  criSocket: /var/run/crio/crio.sock
+  defaultContainerRegistry: docker.io
+  fetcher: KernelSpecsFetcher
+  annotations: {}
+  tolerations: []
+  affinity: {}
+  nodeSelector: {}
+  resources: {}

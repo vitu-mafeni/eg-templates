@@ -1,0 +1,28 @@
+{
+  "language": "python",
+  "display_name": "TensorFlow GPU (Half — 50% memory / 50% cores)",
+  "metadata": {
+    "process_proxy": {
+      "class_name": "enterprise_gateway.services.processproxies.k8s.KubernetesProcessProxy",
+      "config": { "image_name": "elyra/kernel-tf-gpu-py:3.2.3" }
+    },
+    "debugger": true
+  },
+  "env": {
+    "KERNEL_GPU_MEM_PERCENTAGE": "50",
+    "KERNEL_GPU_CORES": "50",
+    "KERNEL_CPUS": "4",
+    "KERNEL_MEMORY": "16Gi",
+    "KERNEL_CPUS_LIMIT": "8",
+    "KERNEL_MEMORY_LIMIT": "32Gi",
+    "IPYTHONDIR": "/opt/custom_kernels/ipython_config"
+  },
+  "argv": [
+    "python",
+    "/usr/local/share/jupyter/kernels/tf-gpu-half/launch_kubernetes.py",
+    "--RemoteProcessProxy.kernel-id", "{kernel_id}",
+    "--RemoteProcessProxy.port-range", "{port_range}",
+    "--RemoteProcessProxy.response-address", "{response_address}",
+    "--RemoteProcessProxy.public-key", "{public_key}"
+  ]
+}
