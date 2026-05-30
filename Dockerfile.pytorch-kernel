@@ -1,0 +1,58 @@
+# ============================================================
+# PyTorch GPU kernel image for Enterprise Gateway
+#
+# Tag: vitu1/kernel-pytorch-gpu:3.2.3-cu121
+#
+# Strategy
+# --------
+# elyra/kernel-py:3.2.3 carries everything EG needs to bootstrap a
+# remote kernel (bootstrap-kernel.sh, kernel-launchers, ipykernel, etc.)
+# but is built on plain Miniconda — no CUDA.
+#
+# PyTorch's official CUDA wheels (--index-url .../cu121) bundle their
+# own copies of the CUDA runtime libraries (libcublas, libcudart, etc.),
+# so they do NOT require a CUDA image as the base.
+#
+# HAMi then intercepts CUDA calls at runtime via LD_PRELOAD=libvgpu.so
+# (injected by its mutating webhook) and enforces the memory/core slice.
+# The pod template must set runtimeClassName: nvidia so that the NVIDIA
+# container runtime exposes /dev/nvidia* inside the container.
+#
+# CUDA compatibility matrix (update if you change the CUDA toolkit):
+#   PyTorch 2.3.x <-> CUDA 12.1  <-> driver >= 525
+#   PyTorch 2.2.x <-> CUDA 12.1  <-> driver >= 525
+#   PyTorch 2.1.x <-> CUDA 12.1  <-> driver >= 525
+# ============================================================
+
+FROM elyra/kernel-py:3.2.3
+
+LABEL maintainer="vitu1" \
+      org.opencontainers.image.title="EG PyTorch GPU kernel" \
+      org.opencontainers.image.version="3.2.3-cu121" \
+      cuda.version="12.1" \
+      pytorch.version="2.3"
+
+USER root
+
+# Install PyTorch 2.3 with bundled CUDA 12.1 runtime.
+# torch, torchvision, torchaudio are pinned so CI produces
+# reproducible layers.  Bump all three together when upgrading.
+RUN pip install --no-cache-dir \
+        torch==2.3.1 \
+        torchvision==0.18.1 \
+        torchaudio==2.3.1 \
+        --index-url https://download.pytorch.org/whl/cu121
+
+# Smoke-test: verify torch imports and reports CUDA availability.
+# This runs at image build time so a misconfigured wheel fails fast.
+# (CUDA device presence is not checked here — no GPU at build time.)
+RUN python - <<'EOF'
+import torch
+print(f"torch {torch.__version__}  cuda_available={torch.cuda.is_available()}")
+# At minimum the CUDA runtime must be detectable from the bundled libs.
+assert torch.version.cuda is not None, "torch was not built with CUDA support"
+print(f"torch.version.cuda = {torch.version.cuda}")
+EOF
+
+# Restore the non-root user that elyra/kernel-py uses.
+USER $NB_UID

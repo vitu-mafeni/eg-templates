@@ -12,7 +12,7 @@ from kubernetes.client.rest import ApiException
 
 urllib3.disable_warnings()
 
-KERNEL_POD_TEMPLATE_PATH = "/kernel-pod.yaml.j2"
+KERNEL_POD_TEMPLATE_PATH = "kernel-pod.yaml.j2"
 
 def generate_kernel_pod_yaml(keywords):
     j_env = Environment(
@@ -28,15 +28,25 @@ def generate_kernel_pod_yaml(keywords):
     return j_env.get_template(KERNEL_POD_TEMPLATE_PATH).render(**keywords)
 
 def extend_pod_env(pod_def: dict) -> dict:
+    """Merge KERNEL_* env vars from the launcher process into the pod spec.
+
+    Only variables whose names start with ``KERNEL_`` are injected.  Dumping
+    the full launcher environment (the previous behaviour) polluted the kernel
+    pod with EG-server variables such as ``CUDA_VISIBLE_DEVICES`` and
+    ``LD_PRELOAD``, which silently overrode the values that the HAMi mutating
+    webhook injects after pod admission.
+    """
     env_stanza = pod_def["spec"]["containers"][0].get("env") or []
     processed_entries: List[str] = []
+    # Update any entry that is already present in the template stanza.
     for item in env_stanza:
         item_name = item.get("name")
         if item_name in os.environ:
             item["value"] = os.environ[item_name]
             processed_entries.append(item_name)
+    # Append only KERNEL_* variables that were not already in the stanza.
     for name, value in os.environ.items():
-        if name not in processed_entries:
+        if name.startswith("KERNEL_") and name not in processed_entries:
             env_stanza.append({"name": name, "value": value})
     pod_def["spec"]["containers"][0]["env"] = env_stanza
     return pod_def

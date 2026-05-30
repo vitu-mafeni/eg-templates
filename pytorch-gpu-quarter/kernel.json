@@ -4,7 +4,7 @@
   "metadata": {
     "process_proxy": {
       "class_name": "enterprise_gateway.services.processproxies.k8s.KubernetesProcessProxy",
-      "config": { "image_name": "elyra/kernel-py:3.2.3" }
+      "config": { "image_name": "vitu1/kernel-pytorch-gpu:3.2.3-cu121" }
     },
     "debugger": true
   },
