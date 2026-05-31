@@ -199,7 +199,7 @@ singleuser:
   #   - No Traitlets assignments → no type errors → no crash.
   extraFiles:
     lab-disable-extensions:
-      mountPath: /etc/jupyter/jupyter_config.py
+      mountPath: /opt/conda/etc/jupyter/jupyter_server_config.py
       stringData: |
         # jupyter_config.py — loaded by every Jupyter application at startup.
         #
