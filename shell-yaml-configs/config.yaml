@@ -184,5 +184,49 @@ singleuser:
   storage:
     type: dynamic
 
+  # ── JupyterLab launcher clean-up ────────────────────────────────────────────
+  # page_config.json is the standard JupyterLab mechanism for disabling
+  # extensions and individual plugins at the server level.  It is loaded
+  # before the frontend starts, so items never appear rather than being
+  # hidden after load.
+  #
+  # Two groups are disabled:
+  #
+  #   Elyra section  — five extension packages removed entirely:
+  #     @elyra/pipeline-editor-extension  → Generic Pipeline Editor +
+  #                                          both Pipeline Editors (Airflow/KFP)
+  #     @elyra/python-editor-extension    → Python Editor
+  #     @elyra/scala-editor-extension     → Scala Editor
+  #     @elyra/r-editor-extension         → R Editor
+  #     @elyra/theme-extension            → Documentation + What's new in v3.15.0
+  #
+  #   Other section  — only the launcher-contributing plugin is disabled;
+  #                    the underlying functionality (file browser, help menu,
+  #                    terminal via CLI) is preserved:
+  #     @jupyterlab/terminal-extension:plugin            → Terminal tile
+  #     @jupyterlab/filebrowser-extension:launcher       → Text File + Markdown File tiles
+  #     @jupyterlab/contextual-help-extension:plugin     → Show Contextual Help tile
+  #
+  # Mount path: JupyterLab reads page_config.json from the directory returned
+  # by `jupyter lab path` inside the singleuser container.  For pip-installed
+  # JupyterLab this is /usr/local/share/jupyter/lab/; for conda it is
+  # /opt/conda/share/jupyter/lab/.  If tiles still appear after the upgrade,
+  # run `jupyter lab path` inside a singleuser pod and adjust mountPath below.
+  extraFiles:
+    lab-page-config:
+      mountPath: /usr/local/share/jupyter/lab/page_config.json
+      data:
+        disabledExtensions:
+          # ── Elyra ──────────────────────────────────────────────
+          - "@elyra/pipeline-editor-extension"
+          - "@elyra/python-editor-extension"
+          - "@elyra/scala-editor-extension"
+          - "@elyra/r-editor-extension"
+          - "@elyra/theme-extension"
+          # ── JupyterLab built-ins (launcher tiles only) ─────────
+          - "@jupyterlab/terminal-extension:plugin"
+          - "@jupyterlab/filebrowser-extension:launcher"
+          - "@jupyterlab/contextual-help-extension:plugin"
+
 ingress:
   enabled: false
