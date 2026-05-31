@@ -214,7 +214,7 @@ singleuser:
   # run `jupyter lab path` inside a singleuser pod and adjust mountPath below.
   extraFiles:
     lab-page-config:
-      mountPath: /usr/local/share/jupyter/lab/page_config.json
+      mountPath: /opt/conda/share/jupyter/lab/page_config.json
       data:
         disabledExtensions:
           # ── Elyra ──────────────────────────────────────────────
