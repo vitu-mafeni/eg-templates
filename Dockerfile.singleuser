@@ -1,0 +1,50 @@
+# JupyterHub Singleuser Image — based on official Elyra image
+#
+# elyra/elyra:3.15.0 ships with:
+#   - jupyter-server 1.23.6  (1.x — compatible with EG 3.2.3)
+#   - jupyterlab 3.x
+#   - elyra 3.15.0 extensions (pipeline editor, code snippets, etc.)
+#
+# We only add jupyterhub on top for the jupyterhub-singleuser entrypoint
+
+FROM elyra/elyra:3.15.0
+
+USER root
+
+ENV PATH=/opt/conda/bin:$PATH
+
+# Use explicit conda pip so the scripts land in /opt/conda/bin/
+RUN /opt/conda/bin/pip install --no-cache-dir "jupyterhub==5.4.4"
+RUN /opt/conda/bin/pip install --no-cache-dir "oauthenticator>=16.0.0"
+
+# Remove Elyra federated extension directories entirely.
+# The disabledExtensions mechanism is broken in this JupyterLab 3.6.2 /
+# jupyterlab_server combination: jupyterlab_server converts dict→list, but
+# PageConfig.isDisabled uses JSON.parse which throws on a JS array, so nothing
+# is ever disabled. Deleting directories prevents them appearing in
+# federated_extensions — they simply never load.
+RUN rm -rf \
+  /opt/conda/share/jupyter/labextensions/@elyra/pipeline-editor-extension \
+  /opt/conda/share/jupyter/labextensions/@elyra/python-editor-extension \
+  /opt/conda/share/jupyter/labextensions/@elyra/scala-editor-extension \
+  /opt/conda/share/jupyter/labextensions/@elyra/r-editor-extension \
+  /opt/conda/share/jupyter/labextensions/@elyra/theme-extension
+
+# Write disabledExtensions as a dict to the sys-prefix labconfig.
+# jupyterlab_server converts this dict to a list when building page_config,
+# which is exactly what the browser expects: isDisabled() uses
+# e.disabled.some() which requires an array.
+RUN mkdir -p /opt/conda/etc/jupyter/labconfig \
+ && /opt/conda/bin/python3 -c "import json,pathlib; p=pathlib.Path('/opt/conda/etc/jupyter/labconfig/page_config.json'); p.write_text(json.dumps({'disabledExtensions': {'@jupyterlab/terminal-extension:plugin': True, '@jupyterlab/filebrowser-extension:launcher': True, '@jupyterlab/help-extension': True}}, indent=2)); print('written', p)"
+
+# Verify
+RUN /opt/conda/bin/python3 -c "from jupyter_server.gateway.managers import GatewayKernelManager; print('Gateway client OK')" \
+ && /opt/conda/bin/python3 -c "import jupyterhub; print('JupyterHub', jupyterhub.__version__)" \
+ && /opt/conda/bin/pip show jupyter-server | grep Version \
+ && echo "Remaining labextensions:" && ls /opt/conda/share/jupyter/labextensions/ \
+ && echo "labconfig page_config.json:" && cat /opt/conda/etc/jupyter/labconfig/page_config.json \
+ && ls -la /opt/conda/bin/jupyterhub-singleuser
+
+USER jovyan
+
+CMD ["/opt/conda/bin/jupyterhub-singleuser", "--ip=0.0.0.0"]

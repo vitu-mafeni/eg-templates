@@ -177,10 +177,11 @@ singleuser:
     JUPYTER_GATEWAY_CONNECT_TIMEOUT: "120"
     JUPYTER_GATEWAY_WS_PING_INTERVAL: "30"
     KERNEL_SERVICE_ACCOUNT_NAME: "enterprise-gateway-sa"
-  cmd: ["jupyterhub-singleuser"]
+  cmd: ["/opt/conda/bin/jupyterhub-singleuser"]
   image:
     name: vitu1/jupyterhub-singleuser
     tag: "eg-compat-oidc-v2"
+    pullPolicy: Always
   storage:
     type: dynamic
 
