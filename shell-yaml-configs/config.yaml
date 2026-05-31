@@ -220,7 +220,7 @@ singleuser:
       stringData: |
         # Blocks the listed extensions/plugins before JupyterLab builds the
         # page config response.  The browser never sees or activates them.
-        c.LabServerApp.blocked_extensions_uids = [
+        c.LabApp.blocked_extensions_uris = [
             # ── Elyra ─────────────────────────────────────────────────────
             "@elyra/pipeline-editor-extension",
             "@elyra/python-editor-extension",
