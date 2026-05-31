@@ -27,14 +27,28 @@ def generate_kernel_pod_yaml(keywords):
     )
     return j_env.get_template(KERNEL_POD_TEMPLATE_PATH).render(**keywords)
 
-def extend_pod_env(pod_def: dict) -> dict:
-    """Merge KERNEL_* env vars from the launcher process into the pod spec.
 
-    Only variables whose names start with ``KERNEL_`` are injected.  Dumping
-    the full launcher environment (the previous behaviour) polluted the kernel
-    pod with EG-server variables such as ``CUDA_VISIBLE_DEVICES`` and
-    ``LD_PRELOAD``, which silently overrode the values that the HAMi mutating
-    webhook injects after pod admission.
+# EG kernel connection parameters that launch_kubernetes_kernel() stores in
+# os.environ without the KERNEL_ prefix.  bootstrap-kernel.sh inside the pod
+# reads these directly to build the launch_ipykernel.py command line.
+# They must be forwarded to the pod but are safe: they carry only a public RSA
+# key, a response address, and an optional port range — nothing that conflicts
+# with HAMi's webhook injections.
+_EG_COMM_VARS: frozenset = frozenset({"PUBLIC_KEY", "RESPONSE_ADDRESS", "PORT_RANGE"})
+
+def extend_pod_env(pod_def: dict) -> dict:
+    """Merge EG kernel connection vars and KERNEL_* vars into the pod spec.
+
+    Allowlisted set (two groups):
+      1. KERNEL_*         — resource/config parameters set by EG and kernel.json
+      2. _EG_COMM_VARS    — PUBLIC_KEY, RESPONSE_ADDRESS, PORT_RANGE: the three
+                            parameters that launch_kubernetes_kernel() stores
+                            without the KERNEL_ prefix; bootstrap-kernel.sh
+                            needs them to build the ipykernel command line.
+
+    Everything else (CUDA_VISIBLE_DEVICES, LD_PRELOAD, HOME, PATH, …) is
+    intentionally excluded so that EG-server environment variables cannot
+    overwrite the values the HAMi mutating webhook injects after pod admission.
     """
     env_stanza = pod_def["spec"]["containers"][0].get("env") or []
     processed_entries: List[str] = []
@@ -44,9 +58,11 @@ def extend_pod_env(pod_def: dict) -> dict:
         if item_name in os.environ:
             item["value"] = os.environ[item_name]
             processed_entries.append(item_name)
-    # Append only KERNEL_* variables that were not already in the stanza.
+    # Append allowlisted variables that were not already in the stanza.
     for name, value in os.environ.items():
-        if name.startswith("KERNEL_") and name not in processed_entries:
+        if name not in processed_entries and (
+            name.startswith("KERNEL_") or name in _EG_COMM_VARS
+        ):
             env_stanza.append({"name": name, "value": value})
     pod_def["spec"]["containers"][0]["env"] = env_stanza
     return pod_def
