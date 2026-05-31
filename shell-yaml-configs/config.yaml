@@ -199,14 +199,21 @@ singleuser:
   #   - No Traitlets assignments → no type errors → no crash.
   extraFiles:
     lab-disable-extensions:
-      mountPath: /etc/jupyter/jupyter_lab_config.py
+      mountPath: /etc/jupyter/jupyter_config.py
       stringData: |
-        # Write page_config.json into the JupyterLab app directory so the server
-        # serves disabledExtensions to the browser before any JS is loaded.
-        # This runs at Jupyter startup, well before the first HTTP response.
+        # jupyter_config.py is loaded by every Jupyter application (it is the
+        # base-class config file for JupyterApp).  jupyter_lab_config.py is
+        # NOT loaded when the server runs as jupyterhub-singleuser because the
+        # main app class is SingleUserLabApp (a jupyter_server extension), not
+        # LabApp directly.  jupyter_server_config.py is already occupied by the
+        # kernel-filter-config extraFile — this separate file avoids conflicts.
+        #
+        # Strategy: write page_config.json via normal Python file I/O.
+        # Direct writes work through overlayfs copy-on-write; ConfigMap bind
+        # mounts (subPath) at that same path silently fail in containerd.
         import json as _json, pathlib as _path, logging as _log
 
-        _logger = _log.getLogger("jupyter_lab_config")
+        _logger = _log.getLogger("jupyter_config")
         _lab_dir = _path.Path("/opt/conda/share/jupyter/lab")
 
         if _lab_dir.exists():
@@ -234,14 +241,17 @@ singleuser:
                     "@jupyterlab/contextual-help-extension:plugin",
                 ]
                 _pc.write_text(_json.dumps(_cfg, indent=2))
-                _logger.info(
-                    "page_config.json written to %s (%d disabled)",
-                    _pc, len(_cfg["disabledExtensions"])
-                )
+                _msg = f"[jupyter_config] page_config.json written → {_pc} ({len(_cfg['disabledExtensions'])} disabled)"
+                print(_msg)
+                _logger.warning(_msg)
             except Exception as _e:
-                _logger.warning("Failed to write page_config.json: %s", _e)
+                _msg = f"[jupyter_config] ERROR writing page_config.json: {_e}"
+                print(_msg)
+                _logger.warning(_msg)
         else:
-            _logger.warning("JupyterLab app dir not found at %s", _lab_dir)
+            _msg = f"[jupyter_config] WARNING: lab dir not found at {_lab_dir}"
+            print(_msg)
+            _logger.warning(_msg)
 
 ingress:
   enabled: false
