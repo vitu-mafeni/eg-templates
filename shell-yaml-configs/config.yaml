@@ -201,57 +201,76 @@ singleuser:
     lab-disable-extensions:
       mountPath: /etc/jupyter/jupyter_config.py
       stringData: |
-        # jupyter_config.py is loaded by every Jupyter application (it is the
-        # base-class config file for JupyterApp).  jupyter_lab_config.py is
-        # NOT loaded when the server runs as jupyterhub-singleuser because the
-        # main app class is SingleUserLabApp (a jupyter_server extension), not
-        # LabApp directly.  jupyter_server_config.py is already occupied by the
-        # kernel-filter-config extraFile — this separate file avoids conflicts.
+        # jupyter_config.py — loaded by every Jupyter application at startup.
         #
-        # Strategy: write page_config.json via normal Python file I/O.
-        # Direct writes work through overlayfs copy-on-write; ConfigMap bind
-        # mounts (subPath) at that same path silently fail in containerd.
-        import json as _json, pathlib as _path, logging as _log
+        # Problem: ElyraApp initialises ~1 s after this file runs and overwrites
+        # page_config.json, restoring its own tiles.  Three-layer defence:
+        #   A) Write page_config.json early (catches non-Elyra paths quickly).
+        #   B) Monkey-patch LabServerApp.initialize_settings so our keys are
+        #      re-injected into settings AFTER all extensions have loaded.
+        #   C) Monkey-patch LabHandler.page_config_data (request-time property)
+        #      so disabledExtensions is always present, immune to any later
+        #      in-process overwrite of page_config.json on disk.
+        import json as _json, pathlib as _path
 
-        _logger = _log.getLogger("jupyter_config")
+        _DISABLED = [
+            "@elyra/pipeline-editor-extension",
+            "@elyra/python-editor-extension",
+            "@elyra/scala-editor-extension",
+            "@elyra/r-editor-extension",
+            "@elyra/theme-extension",
+            "@jupyterlab/terminal-extension:plugin",
+            "@jupyterlab/filebrowser-extension:launcher",
+            "@jupyterlab/contextual-help-extension:plugin",
+        ]
+
+        def _inject(cfg):
+            if isinstance(cfg, dict):
+                cfg["disabledExtensions"] = _DISABLED
+            return cfg
+
+        # ── A: write page_config.json ────────────────────────────────────────
         _lab_dir = _path.Path("/opt/conda/share/jupyter/lab")
-
         if _lab_dir.exists():
             try:
                 _pc = _lab_dir / "page_config.json"
-                # Preserve any existing keys (e.g. exposeAppInBrowser) set by
-                # the JupyterLab package itself.
-                _cfg = {}
+                _d = {}
                 if _pc.exists():
-                    try:
-                        _cfg = _json.loads(_pc.read_text())
-                    except Exception:
-                        pass
-                _cfg["disabledExtensions"] = [
-                    # ── Elyra ───────────────────────────────────────────────
-                    "@elyra/pipeline-editor-extension",
-                    "@elyra/python-editor-extension",
-                    "@elyra/scala-editor-extension",
-                    "@elyra/r-editor-extension",
-                    "@elyra/theme-extension",
-                    # ── JupyterLab built-ins (launcher tile only) ────────────
-                    # plugin ID format keeps the sidebar / menu entry intact.
-                    "@jupyterlab/terminal-extension:plugin",
-                    "@jupyterlab/filebrowser-extension:launcher",
-                    "@jupyterlab/contextual-help-extension:plugin",
-                ]
-                _pc.write_text(_json.dumps(_cfg, indent=2))
-                _msg = f"[jupyter_config] page_config.json written → {_pc} ({len(_cfg['disabledExtensions'])} disabled)"
-                print(_msg)
-                _logger.warning(_msg)
+                    try: _d = _json.loads(_pc.read_text())
+                    except Exception: pass
+                _inject(_d)
+                _pc.write_text(_json.dumps(_d, indent=2))
+                print(f"[jup-cfg] A: page_config.json written ({len(_DISABLED)} disabled)")
             except Exception as _e:
-                _msg = f"[jupyter_config] ERROR writing page_config.json: {_e}"
-                print(_msg)
-                _logger.warning(_msg)
+                print(f"[jup-cfg] A: ERROR {_e}")
         else:
-            _msg = f"[jupyter_config] WARNING: lab dir not found at {_lab_dir}"
-            print(_msg)
-            _logger.warning(_msg)
+            print(f"[jup-cfg] A: WARNING lab dir not found at {_lab_dir}")
+
+        # ── B: patch LabServerApp.initialize_settings ────────────────────────
+        try:
+            from jupyter_lab_server.app import LabServerApp as _LSA
+            _orig_is = _LSA.initialize_settings
+            def _patched_is(self):
+                _orig_is(self)
+                _inject(self.settings.setdefault("page_config_data", {}))
+                print("[jup-cfg] B: page_config_data['disabledExtensions'] injected")
+            _LSA.initialize_settings = _patched_is
+            print("[jup-cfg] B: LabServerApp.initialize_settings patched")
+        except Exception as _e:
+            print(f"[jup-cfg] B: {_e}")
+
+        # ── C: patch LabHandler.page_config_data (request-time, belt+braces) ─
+        try:
+            from jupyter_lab_server.handlers import LabHandler as _LH
+            _pp = _LH.__dict__.get("page_config_data")
+            if isinstance(_pp, property):
+                _orig_get = _pp.fget
+                _LH.page_config_data = property(lambda self: _inject(_orig_get(self)))
+                print("[jup-cfg] C: LabHandler.page_config_data property patched")
+            else:
+                print(f"[jup-cfg] C: page_config_data not a property — skipped (type={type(_pp).__name__})")
+        except Exception as _e:
+            print(f"[jup-cfg] C: {_e}")
 
 ingress:
   enabled: false
