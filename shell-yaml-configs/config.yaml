@@ -185,55 +185,63 @@ singleuser:
     type: dynamic
 
   # ── JupyterLab launcher clean-up ────────────────────────────────────────────
-  # Previous approach used page_config.json mounted into the conda application
-  # directory (/opt/conda/share/jupyter/lab/).  That directory is an image
-  # layer managed by overlayfs; mounting a ConfigMap file into it via subPath
-  # silently fails in containerd because the bind mount is shadowed by the
-  # overlayfs upper layer before JupyterLab reads the file.
+  # All Traitlets-based approaches (blocked_extensions_uids, blocked_extensions_uris)
+  # either don't exist or expect a single URI string rather than a list, causing
+  # the server to crash on startup with exit code 1.
   #
-  # Reliable approach: mount a jupyter_lab_config.py file into /etc/jupyter/.
-  # Jupyter's config loader always scans /etc/jupyter/ (it is NOT an image
-  # layer — it is an empty directory created at pod start).  We already prove
-  # this works because jupyter_server_config.py is mounted there successfully.
-  #
-  # LabServerApp.blocked_extensions_uids is the server-side equivalent of
-  # page_config.json disabledExtensions.  The server builds the page config
-  # from this list before the HTML response is sent, so the browser never
-  # downloads or activates the blocked extension JS modules.
-  #
-  # Two groups:
-  #   Elyra section (five packages removed entirely):
-  #     @elyra/pipeline-editor-extension → Generic + both Pipeline Editors
-  #     @elyra/python-editor-extension   → Python Editor
-  #     @elyra/scala-editor-extension    → Scala Editor
-  #     @elyra/r-editor-extension        → R Editor
-  #     @elyra/theme-extension           → Documentation + What's new in v3.15.0
-  #
-  #   Other section (only the plugin that adds launcher tiles is blocked;
-  #                  the underlying functionality remains in menus):
-  #     @jupyterlab/terminal-extension:plugin         → Terminal tile
-  #     @jupyterlab/filebrowser-extension:launcher    → Text File + Markdown File tiles
-  #     @jupyterlab/contextual-help-extension:plugin  → Show Contextual Help tile
+  # Correct approach: run imperative Python in jupyter_lab_config.py to write
+  # page_config.json directly to the conda app directory.  This works because:
+  #   - /etc/jupyter/jupyter_lab_config.py is executed by Jupyter before the
+  #     server builds its first page config response.
+  #   - Writes to /opt/conda/share/jupyter/lab/ via normal Python file I/O go
+  #     through overlayfs copy-on-write correctly.  Only bind mounts (ConfigMap
+  #     subPath) fail there; direct writes from inside the container do not.
+  #   - No Traitlets assignments → no type errors → no crash.
   extraFiles:
     lab-disable-extensions:
       mountPath: /etc/jupyter/jupyter_lab_config.py
       stringData: |
-        # Blocks the listed extensions/plugins before JupyterLab builds the
-        # page config response.  The browser never sees or activates them.
-        c.LabApp.blocked_extensions_uris = [
-            # ── Elyra ─────────────────────────────────────────────────────
-            "@elyra/pipeline-editor-extension",
-            "@elyra/python-editor-extension",
-            "@elyra/scala-editor-extension",
-            "@elyra/r-editor-extension",
-            "@elyra/theme-extension",
-            # ── JupyterLab built-ins (tile-only removal) ──────────────────
-            # Use the plugin ID format (package:pluginId) to block only the
-            # plugin that registers the launcher tile, not the whole extension.
-            "@jupyterlab/terminal-extension:plugin",
-            "@jupyterlab/filebrowser-extension:launcher",
-            "@jupyterlab/contextual-help-extension:plugin",
-        ]
+        # Write page_config.json into the JupyterLab app directory so the server
+        # serves disabledExtensions to the browser before any JS is loaded.
+        # This runs at Jupyter startup, well before the first HTTP response.
+        import json as _json, pathlib as _path, logging as _log
+
+        _logger = _log.getLogger("jupyter_lab_config")
+        _lab_dir = _path.Path("/opt/conda/share/jupyter/lab")
+
+        if _lab_dir.exists():
+            try:
+                _pc = _lab_dir / "page_config.json"
+                # Preserve any existing keys (e.g. exposeAppInBrowser) set by
+                # the JupyterLab package itself.
+                _cfg = {}
+                if _pc.exists():
+                    try:
+                        _cfg = _json.loads(_pc.read_text())
+                    except Exception:
+                        pass
+                _cfg["disabledExtensions"] = [
+                    # ── Elyra ───────────────────────────────────────────────
+                    "@elyra/pipeline-editor-extension",
+                    "@elyra/python-editor-extension",
+                    "@elyra/scala-editor-extension",
+                    "@elyra/r-editor-extension",
+                    "@elyra/theme-extension",
+                    # ── JupyterLab built-ins (launcher tile only) ────────────
+                    # plugin ID format keeps the sidebar / menu entry intact.
+                    "@jupyterlab/terminal-extension:plugin",
+                    "@jupyterlab/filebrowser-extension:launcher",
+                    "@jupyterlab/contextual-help-extension:plugin",
+                ]
+                _pc.write_text(_json.dumps(_cfg, indent=2))
+                _logger.info(
+                    "page_config.json written to %s (%d disabled)",
+                    _pc, len(_cfg["disabledExtensions"])
+                )
+            except Exception as _e:
+                _logger.warning("Failed to write page_config.json: %s", _e)
+        else:
+            _logger.warning("JupyterLab app dir not found at %s", _lab_dir)
 
 ingress:
   enabled: false
