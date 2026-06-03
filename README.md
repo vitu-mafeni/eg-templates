@@ -70,3 +70,8 @@ helm upgrade enterprise-gateway \
   enterprise-gateway/enterprise-gateway \
   -f eg-values.yaml
 ```
+
+Prepull image
+```bash
+sudo crictl pull docker.io/vitu1/kernel-tf-gpu:3.2.3-cu121
+```

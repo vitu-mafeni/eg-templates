@@ -48,11 +48,36 @@ USER root
 RUN pip install --no-cache-dir \
         tensorflow[and-cuda]==2.16.1
 
+# tensorflow[and-cuda] installs CUDA .so files into
+# site-packages/nvidia/*/lib/ — paths that are NOT in the default
+# ld.so search path, so TF prints "Cannot dlopen some GPU libraries"
+# at every startup and falls back to CPU-only mode.
+# Fix: register all nvidia pip-package lib dirs with ldconfig so the
+# dynamic linker finds them without needing LD_LIBRARY_PATH at runtime.
+RUN python - <<'PYEOF'
+import site, os, pathlib
+nvidia_libs = [
+    'cuda_runtime', 'cublas', 'cufft', 'curand',
+    'cusolver', 'cusparse', 'cudnn', 'cuda_nvrtc',
+    'nccl', 'cuda_cupti',
+]
+paths = []
+for sp in site.getsitepackages():
+    for lib in nvidia_libs:
+        p = os.path.join(sp, 'nvidia', lib, 'lib')
+        if os.path.isdir(p):
+            paths.append(p)
+conf = '/etc/ld.so.conf.d/nvidia-tf.conf'
+pathlib.Path(conf).write_text('\n'.join(paths) + '\n')
+print('Registered', len(paths), 'nvidia lib dirs via ldconfig:', paths)
+PYEOF
+RUN ldconfig
+
 # Smoke-test: verify TF imports and the CUDA runtime is detectable.
 # gpu.list_physical_devices returns an empty list at build time
 # (no GPU device present), but the bundled runtime must still load.
 RUN python - <<'EOF'
-import tensorflow as tf
+import os, subprocess, sys, tensorflow as tf
 
 print(f"TensorFlow {tf.__version__}")
 
@@ -61,6 +86,13 @@ print(f"TensorFlow {tf.__version__}")
 cuda_ver = tf.sysconfig.get_build_info().get("cuda_version", "unknown")
 print(f"Built with CUDA: {cuda_ver}")
 assert cuda_ver != "unknown", "TF was not built with CUDA support"
+
+# Confirm libcudart is discoverable via the system linker (ldconfig).
+# If ldconfig doesn't find it the "Cannot dlopen" warning appears at runtime.
+result = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True)
+assert "libcudart" in result.stdout, \
+    "libcudart not found in ldconfig cache — GPU warning will appear at runtime"
+print("libcudart found in ldconfig cache — GPU dlopen warning suppressed")
 
 # At build time there are no GPUs, so list_physical_devices returns [].
 # We just confirm the call itself does not throw.
