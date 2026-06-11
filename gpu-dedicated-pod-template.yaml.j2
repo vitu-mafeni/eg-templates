@@ -69,9 +69,12 @@ spec:
       limits:
         cpu: "{{ kernel_cpus_limit | default('16') }}"
         memory: "{{ kernel_memory_limit | default('64Gi') }}"
-        # Requests exactly 1 full physical GPU - no percentage cap.
-        # HAMi allocates the entire device exclusively to this pod.
         nvidia.com/gpu: "1"
+        # Defaults to the full device (100% memory / 100% cores) so plain
+        # dedicated profiles behave as before, while dynamic custom profiles
+        # can pass any slice via KERNEL_GPU_MEM_PERCENTAGE / KERNEL_GPU_CORES.
+        nvidia.com/gpumem-percentage: "{{ kernel_gpu_mem_percentage | default('100') }}"
+        nvidia.com/gpucores: "{{ kernel_gpu_cores | default('100') }}"
       requests:
         cpu: "{{ kernel_cpus | default('8') }}"
         memory: "{{ kernel_memory | default('32Gi') }}"
