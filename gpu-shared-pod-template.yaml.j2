@@ -16,7 +16,6 @@ spec:
   # libvgpu.so preload shim (injected by the mutating webhook via LD_PRELOAD)
   # intercepts CUDA calls *on top of* this, enforcing the memory/core slice.
   runtimeClassName: nvidia
-  schedulerName: hami-scheduler
   restartPolicy: Never
   serviceAccountName: "{{ kernel_service_account_name }}"
   tolerations:
