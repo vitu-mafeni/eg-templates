@@ -1049,8 +1049,8 @@ spec:
     - name: custom-startup-scripts
       mountPath: /opt/custom_kernels
   containers:
-  - image: "{{ kernel_image }}"
-    name: "{{ kernel_pod_name }}"
+    - image: "{{ kernel_image }}"
+        name: k
     env:
     - name: KERNEL_LAUNCHERS_DIR
       value: /opt/custom_kernels/kernel-launchers
