@@ -13,7 +13,7 @@ metadata:
 spec:
   # nvidia container runtime required — see gpu-shared-pod-template.yaml.j2
   # for the full explanation.
-  runtimeClassName: nvidia
+  # runtimeClassName: nvidia
   restartPolicy: Never
   serviceAccountName: "{{ kernel_service_account_name }}"
   tolerations:
@@ -1053,36 +1053,36 @@ spec:
       mountPath: /opt/custom_kernels
   containers:
     - image: "{{ kernel_image }}"
-        name: k
-    env:
-    - name: KERNEL_LAUNCHERS_DIR
-      value: /opt/custom_kernels/kernel-launchers
-    - name: EG_RECONNECT_MAX_RETRIES
-      value: "10"
-    - name: EG_RECONNECT_BASE_DELAY
-      value: "2"
-    resources:
-      limits:
-        cpu: "{{ kernel_cpus_limit | default('16') }}"
-        memory: "{{ kernel_memory_limit | default('64Gi') }}"
-        nvidia.com/gpu: "1"
-        # Defaults to the full device (100% memory / 100% cores) so plain
-        # dedicated profiles behave as before, while dynamic custom profiles
-        # can pass any slice via KERNEL_GPU_MEM_PERCENTAGE / KERNEL_GPU_CORES.
-        nvidia.com/gpumem-percentage: "{{ kernel_gpu_mem_percentage | default('100') }}"
-        nvidia.com/gpucores: "{{ kernel_gpu_cores | default('100') }}"
-      requests:
-        cpu: "{{ kernel_cpus | default('8') }}"
-        memory: "{{ kernel_memory | default('32Gi') }}"
-        nvidia.com/gpu: "1"
-    {% if kernel_working_dir %}
-    workingDir: "{{ kernel_working_dir }}"
-    {% endif %}
-    volumeMounts:
-    - name: custom-startup-scripts
-      mountPath: /opt/custom_kernels
-    {% if kernel_volume_mounts %}
-      {% for volume_mount in kernel_volume_mounts %}
-    - {{ volume_mount }}
-      {% endfor %}
-    {% endif %}
+      name: k
+      env:
+      - name: KERNEL_LAUNCHERS_DIR
+        value: /opt/custom_kernels/kernel-launchers
+      - name: EG_RECONNECT_MAX_RETRIES
+        value: "10"
+      - name: EG_RECONNECT_BASE_DELAY
+        value: "2"
+      resources:
+        limits:
+          cpu: "{{ kernel_cpus_limit | default('16') }}"
+          memory: "{{ kernel_memory_limit | default('64Gi') }}"
+          nvidia.com/gpu: "1"
+          # Defaults to the full device (100% memory / 100% cores) so plain
+          # dedicated profiles behave as before, while dynamic custom profiles
+          # can pass any slice via KERNEL_GPU_MEM_PERCENTAGE / KERNEL_GPU_CORES.
+          nvidia.com/gpumem-percentage: "{{ kernel_gpu_mem_percentage | default('100') }}"
+          nvidia.com/gpucores: "{{ kernel_gpu_cores | default('100') }}"
+        requests:
+          cpu: "{{ kernel_cpus | default('8') }}"
+          memory: "{{ kernel_memory | default('32Gi') }}"
+          nvidia.com/gpu: "1"
+      {% if kernel_working_dir %}
+      workingDir: "{{ kernel_working_dir }}"
+      {% endif %}
+      volumeMounts:
+      - name: custom-startup-scripts
+        mountPath: /opt/custom_kernels
+      {% if kernel_volume_mounts %}
+        {% for volume_mount in kernel_volume_mounts %}
+      - {{ volume_mount }}
+        {% endfor %}
+      {% endif %}

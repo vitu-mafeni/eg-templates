@@ -15,7 +15,7 @@ spec:
   # the host driver libraries are visible inside the container.  HAMi's
   # libvgpu.so preload shim (injected by the mutating webhook via LD_PRELOAD)
   # intercepts CUDA calls *on top of* this, enforcing the memory/core slice.
-  runtimeClassName: nvidia
+  # runtimeClassName: nvidia
   restartPolicy: Never
   serviceAccountName: "{{ kernel_service_account_name }}"
   tolerations:
@@ -1055,42 +1055,42 @@ spec:
       mountPath: /opt/custom_kernels
   containers:
     - image: "{{ kernel_image }}"
-        name: k
-    env:
-    - name: KERNEL_LAUNCHERS_DIR
-      value: /opt/custom_kernels/kernel-launchers
-    - name: EG_RECONNECT_MAX_RETRIES
-      value: "10"
-    - name: EG_RECONNECT_BASE_DELAY
-      value: "2"
-    resources:
-      limits:
-        cpu: "{{ kernel_cpus_limit | default('4') }}"
-        memory: "{{ kernel_memory_limit | default('16Gi') }}"
-        nvidia.com/gpu: "1"
-        # gpumem-percentage scales to any GPU model automatically.
-        # 25% on A100-80GB = 20GB, on T4-16GB = 4GB, on TITAN RTX-24GB = 6GB
-        # The kernel.json env values are defaults only: EG re-applies client-
-        # supplied KERNEL_GPU_MEM_PERCENTAGE / KERNEL_GPU_CORES after the
-        # kernelspec env, so dynamic custom profiles can pass any slice.
-        nvidia.com/gpumem-percentage: "{{ kernel_gpu_mem_percentage | default('25') }}"
-        nvidia.com/gpucores: "{{ kernel_gpu_cores | default('25') }}"
-      requests:
-        cpu: "{{ kernel_cpus | default('2') }}"
-        memory: "{{ kernel_memory | default('8Gi') }}"
-        # nvidia.com/gpumem-percentage and nvidia.com/gpucores are HAMi
-        # extended resources and are only valid in `limits`.  Listing them
-        # in `requests` confuses HAMi's scheduler extender and can cause
-        # double-counting or admission failures.
-        nvidia.com/gpu: "1"
-    {% if kernel_working_dir %}
-    workingDir: "{{ kernel_working_dir }}"
-    {% endif %}
-    volumeMounts:
-    - name: custom-startup-scripts
-      mountPath: /opt/custom_kernels
-    {% if kernel_volume_mounts %}
-      {% for volume_mount in kernel_volume_mounts %}
-    - {{ volume_mount }}
-      {% endfor %}
-    {% endif %}
+      name: k
+      env:
+      - name: KERNEL_LAUNCHERS_DIR
+        value: /opt/custom_kernels/kernel-launchers
+      - name: EG_RECONNECT_MAX_RETRIES
+        value: "10"
+      - name: EG_RECONNECT_BASE_DELAY
+        value: "2"
+      resources:
+        limits:
+          cpu: "{{ kernel_cpus_limit | default('4') }}"
+          memory: "{{ kernel_memory_limit | default('16Gi') }}"
+          nvidia.com/gpu: "1"
+          # gpumem-percentage scales to any GPU model automatically.
+          # 25% on A100-80GB = 20GB, on T4-16GB = 4GB, on TITAN RTX-24GB = 6GB
+          # The kernel.json env values are defaults only: EG re-applies client-
+          # supplied KERNEL_GPU_MEM_PERCENTAGE / KERNEL_GPU_CORES after the
+          # kernelspec env, so dynamic custom profiles can pass any slice.
+          nvidia.com/gpumem-percentage: "{{ kernel_gpu_mem_percentage | default('25') }}"
+          nvidia.com/gpucores: "{{ kernel_gpu_cores | default('25') }}"
+        requests:
+          cpu: "{{ kernel_cpus | default('2') }}"
+          memory: "{{ kernel_memory | default('8Gi') }}"
+          # nvidia.com/gpumem-percentage and nvidia.com/gpucores are HAMi
+          # extended resources and are only valid in `limits`.  Listing them
+          # in `requests` confuses HAMi's scheduler extender and can cause
+          # double-counting or admission failures.
+          nvidia.com/gpu: "1"
+      {% if kernel_working_dir %}
+      workingDir: "{{ kernel_working_dir }}"
+      {% endif %}
+      volumeMounts:
+      - name: custom-startup-scripts
+        mountPath: /opt/custom_kernels
+      {% if kernel_volume_mounts %}
+        {% for volume_mount in kernel_volume_mounts %}
+      - {{ volume_mount }}
+        {% endfor %}
+      {% endif %}
