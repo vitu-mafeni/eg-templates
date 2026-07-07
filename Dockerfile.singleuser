@@ -1,11 +1,11 @@
-FROM docker.io/lehuannhatrang/jupyter-scipy:v1.11.0
+FROM docker.io/lehuannhatrang/jupyter-scipy:v1.13.0
 
 USER root
 
 RUN /opt/conda/bin/pip install --no-cache-dir \
     "jupyterhub==5.4.4" \
     "oauthenticator>=16.0.0" \
-    "kernel-checkpoint==0.1.9"
+    "kernel-checkpoint==0.1.12"
 
 RUN rm -rf /etc/services.d/jupyterlab \
            /etc/cont-init.d/jupyterlab \
