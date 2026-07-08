@@ -1,5 +1,6 @@
 {
   "language": "python",
+  "interrupt_mode": "message",
   "display_name": "TensorFlow GPU (Quarter — 25% memory / 25% cores)",
   "metadata": {
     "process_proxy": {

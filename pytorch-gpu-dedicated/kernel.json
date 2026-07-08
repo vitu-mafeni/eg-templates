@@ -1,5 +1,6 @@
 {
   "language": "python",
+  "interrupt_mode": "message",
   "display_name": "PyTorch GPU (Dedicated — 1 full GPU)",
   "metadata": {
     "process_proxy": {

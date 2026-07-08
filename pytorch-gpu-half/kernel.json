@@ -1,5 +1,6 @@
 {
   "language": "python",
+  "interrupt_mode": "message",
   "display_name": "PyTorch GPU (Half — 50% memory / 50% cores)",
   "metadata": {
     "process_proxy": {

@@ -1,5 +1,6 @@
 {
   "language": "python",
+  "interrupt_mode": "message",
   "display_name": "Python 3 (CPU Small — 2 CPU / 4Gi)",
   "metadata": {
     "process_proxy": {
