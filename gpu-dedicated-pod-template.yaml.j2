@@ -19,7 +19,7 @@ metadata:
     checkpoint-restore.crio.io/{{ kernel_pod_name }}: "/shared-pvc/checkpoint-storage/{{ kernel_checkpoint_file_path }}"
     {% endif %}
 spec:
-  runtimeClassName: nvidia-cdi
+  
   {% if kernel_gpu_type is defined %}
   nodeSelector:
     gpu-type: "{{ kernel_gpu_type }}"
