@@ -1,0 +1,49 @@
+# ============================================================
+# Delivers VS Code (code-server) + jupyter-server-proxy into the
+# singleuser pod WITHOUT rebuilding vitu1/jupyterhub-singleuser.
+#
+# Same initContainer + shared-volume pattern as
+# jupyterlab-missed-output-replay/Dockerfile and
+# jupyterlab-pod-pending-notice/Dockerfile — this image's only job at pod
+# startup is to `cp` an already-built payload into a shared emptyDir, which
+# the JupyterHub Helm chart then mounts into the singleuser container.
+#
+# This replaces an earlier version of the install-remotedev initContainer
+# that ran apt-get/pip/curl LIVE on every single user spawn — that took
+# 90+ seconds per spawn (confirmed against real spawn logs) since it
+# re-downloaded everything from scratch every time. Baking the same
+# install steps into this image at BUILD time instead cuts spawn time to
+# a plain file copy, no network calls.
+#
+# Build:
+#   docker build -t docker.io/vitu1/singleuser-extensions:remotedev-0.1.0 .
+#   docker push docker.io/vitu1/singleuser-extensions:remotedev-0.1.0
+#
+# To bump jupyter-server-proxy/jupyter-vscode-proxy/code-server versions:
+# edit the pip/install-codeserver lines below, bump the image tag, rebuild+push.
+#
+# IMPORTANT: code-server's standalone installer creates its bin/code-server
+# as an ABSOLUTE symlink into lib/code-server-<version>/ (confirmed: this
+# broke VS Code entirely the first time, because the install path didn't
+# match where the volume was later mounted in the running pod). The
+# --prefix below MUST match the mountPath singleuser.storage.extraVolumeMounts
+# uses for this volume in k8s/jhub-values.yaml (currently /opt/remotedev) —
+# if that mountPath ever changes, this --prefix must change with it.
+# ============================================================
+FROM python:3.11-slim AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates tar && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --target=/opt/remotedev/site-packages \
+      jupyter-server-proxy==4.* jupyter-vscode-proxy==0.6.*
+
+RUN curl -fsSL https://code-server.dev/install.sh -o /tmp/install-codeserver.sh && \
+    sh /tmp/install-codeserver.sh --method=standalone --prefix=/opt/remotedev/codeserver --version 4.22.1 && \
+    test -x /opt/remotedev/codeserver/bin/code-server
+
+FROM alpine:3.19
+COPY --from=builder /opt/remotedev/ /extensions/
+
+CMD ["/bin/sh", "-c", "cp -r /extensions/. /shared-remotedev/"]
