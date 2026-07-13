@@ -43,6 +43,15 @@ FROM docker.io/vitu1/kernel-tf-gpu:3.2.3-cu121
 
 USER root
 
+# The PyTorch base image had no curl (confirmed while building that image —
+# "curl: command not found"); install it explicitly here too rather than
+# assume this base differs. CUDA runtime images ("-cu121") are Ubuntu/Debian-
+# based, so apt-get is the right package manager; swap for apk/yum/dnf if
+# this base image ever changes to something non-Debian.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates tar && \
+    rm -rf /var/lib/apt/lists/*
+
 RUN curl -fsSL https://code-server.dev/install.sh -o /tmp/install-codeserver.sh && \
     sh /tmp/install-codeserver.sh --method=standalone --prefix=/opt/codeserver --version 4.22.1 && \
     test -x /opt/codeserver/bin/code-server && \
