@@ -122,7 +122,7 @@ kernel:
   # defaultKernelName: python_kubernetes
 
 kernelspecs:
-  image: vitu1/enterprise-gateway-kernelspecs:1.0.1
+  image: vitu1/enterprise-gateway-kernelspecs:1.0.2
   imagePullPolicy: Always
 
 nfs:

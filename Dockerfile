@@ -1,5 +1,5 @@
 # ============================================================
-# Enterprise Gateway kernelspecs image
+# Enterprise Gateway kernelspecs image  — tag: vitu1/enterprise-gateway-kernelspecs:1.0.2
 # Contains 9 hardware-agnostic kernel profiles:
 #
 #   CPU:

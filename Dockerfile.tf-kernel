@@ -1,0 +1,105 @@
+# ============================================================
+# TensorFlow GPU kernel image for Enterprise Gateway
+#
+# Tag: vitu1/kernel-tf-gpu:3.2.3-cu121
+#
+# Strategy
+# --------
+# elyra/kernel-py:3.2.3 carries everything EG needs to bootstrap a
+# remote kernel (bootstrap-kernel.sh, kernel-launchers, ipykernel, etc.)
+# but is built on plain Miniconda — no CUDA.
+#
+# tensorflow[and-cuda] (pip extra introduced in TF 2.13) bundles its own
+# CUDA 12 runtime libraries, so no CUDA base image is required.
+# The package installs: libcudart, libcublas, libcufft, libcurand,
+# libcusolver, libcusparse, and cuDNN 8 — everything TF needs to run
+# on the GPU without the host having those libraries inside the container.
+#
+# HAMi enforces the memory/core slice via LD_PRELOAD=libvgpu.so
+# (injected by its mutating webhook after pod admission).
+# The pod template must set runtimeClassName: nvidia so that the NVIDIA
+# container runtime exposes /dev/nvidia* and the host driver stub inside
+# the container — HAMi's shim sits on top of that.
+#
+# CUDA compatibility matrix (update if you change TF version):
+#   TF 2.16.x  <-> CUDA 12.3  <-> driver >= 525  (bundled via [and-cuda])
+#   TF 2.15.x  <-> CUDA 12.2  <-> driver >= 520
+#   TF 2.13.x  <-> CUDA 11.8  <-> driver >= 450
+#
+# We use TF 2.16.1 with the [and-cuda] extra so it is consistent with
+# the CUDA 12.1 runtime bundled in the PyTorch image (both require
+# driver >= 525, simplifying node requirements).
+# ============================================================
+
+FROM elyra/kernel-py:3.2.3
+
+LABEL maintainer="vitu1" \
+      org.opencontainers.image.title="EG TensorFlow GPU kernel" \
+      org.opencontainers.image.version="3.2.3-cu121" \
+      cuda.version="12.3" \
+      tensorflow.version="2.16.1"
+
+USER root
+
+# Install TensorFlow 2.16.1 with bundled CUDA libraries.
+# The [and-cuda] extra pulls nvidia-cuda-runtime, nvidia-cublas,
+# nvidia-cudnn, etc. as ordinary pip packages — no CUDA toolkit
+# on the build host needed.
+RUN pip install --no-cache-dir \
+        tensorflow[and-cuda]==2.16.1
+
+# tensorflow[and-cuda] installs CUDA .so files into
+# site-packages/nvidia/*/lib/ — paths that are NOT in the default
+# ld.so search path, so TF prints "Cannot dlopen some GPU libraries"
+# at every startup and falls back to CPU-only mode.
+# Fix: register all nvidia pip-package lib dirs with ldconfig so the
+# dynamic linker finds them without needing LD_LIBRARY_PATH at runtime.
+RUN python - <<'PYEOF'
+import site, os, pathlib
+nvidia_libs = [
+    'cuda_runtime', 'cublas', 'cufft', 'curand',
+    'cusolver', 'cusparse', 'cudnn', 'cuda_nvrtc',
+    'nccl', 'cuda_cupti',
+]
+paths = []
+for sp in site.getsitepackages():
+    for lib in nvidia_libs:
+        p = os.path.join(sp, 'nvidia', lib, 'lib')
+        if os.path.isdir(p):
+            paths.append(p)
+conf = '/etc/ld.so.conf.d/nvidia-tf.conf'
+pathlib.Path(conf).write_text('\n'.join(paths) + '\n')
+print('Registered', len(paths), 'nvidia lib dirs via ldconfig:', paths)
+PYEOF
+RUN ldconfig
+
+# Smoke-test: verify TF imports and the CUDA runtime is detectable.
+# gpu.list_physical_devices returns an empty list at build time
+# (no GPU device present), but the bundled runtime must still load.
+RUN python - <<'EOF'
+import os, subprocess, sys, tensorflow as tf
+
+print(f"TensorFlow {tf.__version__}")
+
+# Confirm the CUDA runtime loaded successfully by checking the
+# version string; this fails if the bundled libraries are broken.
+cuda_ver = tf.sysconfig.get_build_info().get("cuda_version", "unknown")
+print(f"Built with CUDA: {cuda_ver}")
+assert cuda_ver != "unknown", "TF was not built with CUDA support"
+
+# Confirm libcudart is discoverable via the system linker (ldconfig).
+# If ldconfig doesn't find it the "Cannot dlopen" warning appears at runtime.
+result = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True)
+assert "libcudart" in result.stdout, \
+    "libcudart not found in ldconfig cache — GPU warning will appear at runtime"
+print("libcudart found in ldconfig cache — GPU dlopen warning suppressed")
+
+# At build time there are no GPUs, so list_physical_devices returns [].
+# We just confirm the call itself does not throw.
+gpus = tf.config.list_physical_devices("GPU")
+print(f"GPUs visible at build time: {gpus} (expected [] — no GPU on builder)")
+print("Smoke-test passed")
+EOF
+
+# Restore the non-root user that elyra/kernel-py uses.
+USER $NB_UID

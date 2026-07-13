@@ -11,6 +11,9 @@ metadata:
   annotations:
     cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
 spec:
+  # nvidia container runtime required — see gpu-shared-pod-template.yaml.j2
+  # for the full explanation.
+  runtimeClassName: nvidia
   schedulerName: hami-scheduler
   restartPolicy: Never
   serviceAccountName: "{{ kernel_service_account_name }}"

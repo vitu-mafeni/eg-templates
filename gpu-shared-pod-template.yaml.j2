@@ -11,6 +11,11 @@ metadata:
   annotations:
     cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
 spec:
+  # nvidia container runtime must be active so that /dev/nvidia* devices and
+  # the host driver libraries are visible inside the container.  HAMi's
+  # libvgpu.so preload shim (injected by the mutating webhook via LD_PRELOAD)
+  # intercepts CUDA calls *on top of* this, enforcing the memory/core slice.
+  runtimeClassName: nvidia
   schedulerName: hami-scheduler
   restartPolicy: Never
   serviceAccountName: "{{ kernel_service_account_name }}"
@@ -74,9 +79,11 @@ spec:
       requests:
         cpu: "{{ kernel_cpus | default('2') }}"
         memory: "{{ kernel_memory | default('8Gi') }}"
+        # nvidia.com/gpumem-percentage and nvidia.com/gpucores are HAMi
+        # extended resources and are only valid in `limits`.  Listing them
+        # in `requests` confuses HAMi's scheduler extender and can cause
+        # double-counting or admission failures.
         nvidia.com/gpu: "1"
-        nvidia.com/gpumem-percentage: "{{ kernel_gpu_mem_percentage | default('25') }}"
-        nvidia.com/gpucores: "{{ kernel_gpu_cores | default('25') }}"
     {% if kernel_working_dir %}
     workingDir: "{{ kernel_working_dir }}"
     {% endif %}
