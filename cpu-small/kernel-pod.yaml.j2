@@ -9,17 +9,21 @@ metadata:
     component: kernel
     source: kernel-pod.yaml
   annotations:
+    sidecar.istio.io/inject: "false"
     cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    {% if kernel_checkpoint_name is defined %}
+    checkpoint-restore-name: "{{ kernel_checkpoint_name }}"
+    {% endif %}
+    {% if kernel_checkpoint_file_path and kernel_pod_name is defined %}
+    checkpoint-restore.crio.io/{{ kernel_pod_name }}: "/shared-pvc/checkpoint-storage/{{ kernel_checkpoint_file_path }}"
+    {% endif %}
 spec:
-  schedulerName: hami-scheduler
+  {% if kernel_gpu_type is defined %}
+  nodeSelector:
+    gpu-type: "{{ kernel_gpu_type }}"
+  {% endif %}
   restartPolicy: Never
   serviceAccountName: "{{ kernel_service_account_name }}"
-  tolerations:
-    - key: "nvidia.com/gpu"
-      operator: "Exists"
-      effect: "NoSchedule"
-  nodeSelector:
-    hardware-type: gpu
   {% if kernel_uid is defined or kernel_gid is defined %}
   securityContext:
     {% if kernel_uid is defined %}
@@ -33,31 +37,79 @@ spec:
   volumes:
   - name: custom-startup-scripts
     emptyDir: {}
-  - name: gpu-enforcer-vol
-    configMap:
-      name: gpu-enforcer-script
-      defaultMode: 0755
+  - name: kernel-launcher-override
+    emptyDir: {}
+  {% if kernel_workspace_pvc_name is defined %}
+  - name: "{{ kernel_workspace_pvc_name }}"
+    persistentVolumeClaim:
+      claimName: "{{ kernel_workspace_pvc_name }}"
+  {% endif %}
   {% if kernel_volumes %}
-    {% for volume in kernel_volumes %}
+  {% for volume in kernel_volumes %}
   - {{ volume }}
-    {% endfor %}
+  {% endfor %}
   {% endif %}
   initContainers:
-  - name: install-gpu-enforcer
-    image: busybox:1.36
-    command: ["/bin/sh", "-c"]
+  - name: download-gpu-enforcer
+    image: "{{ kernel_image }}"
+    command: ["python", "-c"]
     args:
       - |
-        mkdir -p /opt/custom_kernels/ipython_config/profile_default/startup
-        cp /mnt/enforcer/00-enforce-limits.py \
-           /opt/custom_kernels/ipython_config/profile_default/startup/00-enforce-limits.py
-        chmod 755 /opt/custom_kernels/ipython_config/profile_default/startup/00-enforce-limits.py
+        import urllib.request
+        import os
+        import ssl
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        url = "https://raw.githubusercontent.com/lehuannhatrang/ml-platform-manifests/refs/heads/main/applications/enterprise-gateway/overlays/scripts/gpu-enforce-limit.py"
+        dest_dir = "/opt/custom_kernels/ipython_config/profile_default/startup"
+        dest_file = os.path.join(dest_dir, "00-enforce-limits.py")
+
+        os.makedirs(dest_dir, exist_ok=True)
+
+        with urllib.request.urlopen(url, context=ctx) as response, open(dest_file, 'wb') as out_file:
+            out_file.write(response.read())
+
+        print(f"Saved to {dest_file}")
+
+        os.chmod(dest_file, 0o755)
+
+        config_dir = "/opt/custom_kernels/ipython_config/profile_default"
+        os.makedirs(config_dir, exist_ok=True)
+        with open(os.path.join(config_dir, "ipython_config.py"), "w") as f:
+            f.write("c.HistoryManager.enabled = False\n")
     volumeMounts:
     - name: custom-startup-scripts
       mountPath: /opt/custom_kernels
-    - name: gpu-enforcer-vol
-      mountPath: /mnt/enforcer
-      readOnly: true
+  - name: download-kernel-launcher
+    image: "{{ kernel_image }}"
+    command: ["python", "-c"]
+    args:
+      - |
+        import os
+        import ssl
+        import urllib.request
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        url = "https://raw.githubusercontent.com/lehuannhatrang/stateful-migration-operator/refs/heads/huanle/migration-agent-ver2/plugins/jupyter-enterprise-gateway/launch_ipykernel.py"
+        dest_dir = "/kernel-launcher-override"
+        dest_file = os.path.join(dest_dir, "launch_ipykernel.py")
+
+        os.makedirs(dest_dir, exist_ok=True)
+
+        with urllib.request.urlopen(url, context=ctx) as response, open(dest_file, "wb") as out_file:
+            out_file.write(response.read())
+
+        os.chmod(dest_file, 0o755)
+        print(f"Saved to {dest_file}")
+    volumeMounts:
+    - name: kernel-launcher-override
+      mountPath: /kernel-launcher-override
   containers:
   - image: "{{ kernel_image }}"
     name: "{{ kernel_pod_name }}"
@@ -66,25 +118,24 @@ spec:
       limits:
         cpu: "{{ kernel_cpus_limit | default('4') }}"
         memory: "{{ kernel_memory_limit | default('16Gi') }}"
-        nvidia.com/gpu: "1"
-        # gpumem-percentage scales to any GPU model automatically.
-        # 25% on A100-80GB = 20GB, on T4-16GB = 4GB, on TITAN RTX-24GB = 6GB
-        nvidia.com/gpumem-percentage: "{{ kernel_gpu_mem_percentage | default('25') }}"
-        nvidia.com/gpucores: "{{ kernel_gpu_cores | default('25') }}"
       requests:
         cpu: "{{ kernel_cpus | default('2') }}"
         memory: "{{ kernel_memory | default('8Gi') }}"
-        nvidia.com/gpu: "1"
-        nvidia.com/gpumem-percentage: "{{ kernel_gpu_mem_percentage | default('25') }}"
-        nvidia.com/gpucores: "{{ kernel_gpu_cores | default('25') }}"
     {% if kernel_working_dir %}
     workingDir: "{{ kernel_working_dir }}"
     {% endif %}
     volumeMounts:
     - name: custom-startup-scripts
       mountPath: /opt/custom_kernels
+    - name: kernel-launcher-override
+      mountPath: /usr/local/bin/kernel-launchers/python/scripts/launch_ipykernel.py
+      subPath: launch_ipykernel.py
+    {% if kernel_workspace_pvc_name is defined %}
+    - name: "{{ kernel_workspace_pvc_name }}"
+      mountPath: /home/jovyan
+    {% endif %}
     {% if kernel_volume_mounts %}
-      {% for volume_mount in kernel_volume_mounts %}
+    {% for volume_mount in kernel_volume_mounts %}
     - {{ volume_mount }}
-      {% endfor %}
+    {% endfor %}
     {% endif %}

@@ -1,10 +1,11 @@
 {
   "language": "python",
+  "interrupt_mode": "message",
   "display_name": "TensorFlow GPU (Half — 50% memory / 50% cores)",
   "metadata": {
     "process_proxy": {
       "class_name": "enterprise_gateway.services.processproxies.k8s.KubernetesProcessProxy",
-      "config": { "image_name": "vitu1/kernel-tf-gpu:3.2.3-cu121" }
+      "config": { "image_name": "docker.io/vitu1/kernel-tf-gpu:3.2.3-cu121" }
     },
     "debugger": true
   },

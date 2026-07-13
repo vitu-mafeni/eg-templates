@@ -1,0 +1,435 @@
+import { INotebookTracker, NotebookActions } from '@jupyterlab/notebook';
+import { ServerConnection } from '@jupyterlab/services';
+import { URLExt } from '@jupyterlab/coreutils';
+// Deep import, deliberately: this class exists and its constructor is
+// public, but the package's own top-level index does not re-export it —
+// adopting an orphaned execution (see adoptPendingExecution) has no
+// supported public API. Pinned to the exact JupyterLab version this
+// extension already requires (see package.json/Dockerfile), so an upgrade
+// that removes/changes this internal path is a rebuild anyway, not a
+// silent breakage.
+import { KernelShellFutureHandler } from '@jupyterlab/services/lib/kernel/future';
+// In-flight-call dedup lives on `window`, keyed by kernel_id. This ONLY
+// guards against concurrent replay calls racing within a single page load
+// (sessionContext.ready and kernelChanged can both fire near-simultaneously,
+// and JupyterLab's Module Federation can instantiate this plugin's module
+// more than once in one page — `window` is the one object immune to both).
+// It deliberately does NOT track "how far have I replayed" — see below for
+// why that can't live in memory at all.
+const INFLIGHT_KEY = '__missedOutputInFlight';
+function inFlightMap() {
+    const w = window;
+    if (!w[INFLIGHT_KEY]) {
+        w[INFLIGHT_KEY] = new Map();
+    }
+    return w[INFLIGHT_KEY];
+}
+// msg_ids of execute_requests THIS page itself has sent, per kernel. Any
+// output whose parent_msg_id is in this set is already being (or already
+// was) delivered natively by JupyterLab's own future-based iopub routing —
+// replaying it too would double-append it. Only messages whose request
+// this page never sent (leftover from before a reload, or from a kernel
+// this page merely attached to without running anything) are fair game for
+// replay. This is what makes continuous polling (below) safe: without it,
+// polling would re-apply every normal, already-displayed execution result.
+const sentMsgIds = new Map();
+// Debounced "replay right now" trigger. `iopubMessage` fires for EVERY
+// message the kernel connection receives, regardless of whether a future is
+// registered for it — unlike a fixed poll interval, this lets us react the
+// instant genuinely orphaned output actually arrives on the wire, rather
+// than waiting up to a full tick later. The short debounce just collapses a
+// burst (e.g. a tight print loop) into one fetch instead of one per message.
+const IMMEDIATE_REPLAY_DEBOUNCE_MS = 120;
+const immediateReplayTimers = new Map();
+function triggerImmediateReplay(panel) {
+    if (immediateReplayTimers.has(panel)) {
+        return;
+    }
+    const id = window.setTimeout(() => {
+        immediateReplayTimers.delete(panel);
+        void replayForPanel(panel);
+    }, IMMEDIATE_REPLAY_DEBOUNCE_MS);
+    immediateReplayTimers.set(panel, id);
+}
+function trackSentRequests(panel) {
+    var _a;
+    const kernel = (_a = panel.sessionContext.session) === null || _a === void 0 ? void 0 : _a.kernel;
+    if (!kernel) {
+        return;
+    }
+    let set = sentMsgIds.get(kernel.id);
+    if (!set) {
+        set = new Set();
+        sentMsgIds.set(kernel.id, set);
+    }
+    kernel.anyMessage.connect((_sender, args) => {
+        if (args.direction === 'send' && args.msg.header.msg_type === 'execute_request') {
+            set.add(args.msg.header.msg_id);
+        }
+    });
+    kernel.iopubMessage.connect((_sender, msg) => {
+        const parentId = msg.parent_header && msg.parent_header.msg_id;
+        if (parentId && !set.has(parentId)) {
+            triggerImmediateReplay(panel);
+        }
+    });
+}
+// msg_ids of orphaned execute_requests this page has already ADOPTED (see
+// adoptPendingExecution). Guards against re-registering a future for the
+// same msg_id on every poll tick — once adopted, native routing owns it.
+const adoptedMsgIds = new Set();
+// The core gap this plugin was papering over: after a reload, JupyterLab has
+// no Kernel.IFuture for a cell's still-running execute_request (only the
+// page that originally called kernel.requestExecute() ever gets one), so
+// none of the NORMAL machinery — output routing, execution count, the
+// running-cell spinner, or the eventual clean completion — applies to it.
+// Manually replaying buffered output (doReplay) covers the output, but
+// nothing else. This constructs a real future for the msg_id the server
+// already told us is still outstanding (see get_pending_executions) and
+// hands it to the cell's OutputArea exactly the way a normal execute() call
+// would — so from this point on, JupyterLab handles it entirely natively:
+// new output streams in through the SAME path as any other running cell,
+// and when the real execute_reply/idle eventually arrives, the cell's
+// execution count updates and its prompt/spinner correctly clears, with no
+// further help from this extension.
+function adoptPendingExecution(panel, kernelId, cell, msgId) {
+    var _a, _b, _c;
+    if (adoptedMsgIds.has(msgId)) {
+        return;
+    }
+    const kernel = (_a = panel.sessionContext.session) === null || _a === void 0 ? void 0 : _a.kernel;
+    if (!kernel || kernel.id !== kernelId) {
+        return;
+    }
+    const sentForKernel = sentMsgIds.get(kernelId);
+    if (sentForKernel === null || sentForKernel === void 0 ? void 0 : sentForKernel.has(msgId)) {
+        // This page sent it itself — it already has a real future. Adopting
+        // again would silently replace (and orphan) the one already in use.
+        return;
+    }
+    try {
+        const fakeRequest = {
+            header: {
+                msg_id: msgId,
+                msg_type: 'execute_request',
+                username: '',
+                session: '',
+                date: '',
+                version: '5.3'
+            },
+            parent_header: {},
+            metadata: {},
+            content: { code: '', silent: false },
+            channel: 'shell',
+            buffers: []
+        };
+        const future = new KernelShellFutureHandler(() => {
+            /* no-op dispose callback — nothing extra to release on our side */
+        }, fakeRequest, 
+        /* expectReply */ true, 
+        /* disposeOnDone */ true, kernel);
+        // Register directly into the kernel connection's own future map — the
+        // only supported entry points (requestExecute/sendShellMessage) always
+        // send a brand-new request first, which would re-run the cell's code.
+        // `_futures` is private but, confirmed live, keeps its literal name in
+        // the running bundle.
+        kernel._futures.set(msgId, future);
+        // Hand it to the OutputArea via the PUBLIC `future` setter — NOT the
+        // private `_setFuture(value, clear)` this is implemented with. Confirmed
+        // live: unlike `_futures` above, `_setFuture` gets name-mangled in
+        // JupyterLab's own minified core bundle (our extension is a SEPARATE
+        // build, so this plugin's un-mangled source string can't find it there),
+        // throwing "outputArea._setFuture is not a function". The public setter
+        // is guaranteed stable (it's real external API) but always clears
+        // existing output — the caller (doReplay) accounts for this by adopting
+        // BEFORE applying catch-up replay for this cell, and by resetting this
+        // cell's replay bookkeeping below so that catch-up re-applies into the
+        // now-empty area instead of being skipped as "already applied".
+        cell.outputArea.future = future;
+        setCellLastSeq(cell, 0);
+        cell.model.executionState = 'running';
+        adoptedMsgIds.add(msgId);
+        // From here on, native routing owns this msg_id — our own replay must
+        // stop touching it too, or output would double-apply once both paths
+        // see the same buffered message.
+        (_c = (_b = sentMsgIds.get(kernelId)) === null || _b === void 0 ? void 0 : _b.add(msgId)) !== null && _c !== void 0 ? _c : sentMsgIds.set(kernelId, new Set([msgId]));
+        console.log(`missed-output-replay: adopted still-running execution ${msgId} for kernel ${kernelId} — ` +
+            'native execution tracking restored');
+    }
+    catch (err) {
+        // Never let a failed adoption break the (working) manual replay path —
+        // e.g. a future JupyterLab version renaming these internals.
+        console.warn('missed-output-replay: failed to adopt pending execution', err);
+    }
+}
+// "Already delivered up to seq N" is tracked in each CELL's own metadata
+// (a standard nbformat field, saved to disk with the notebook) rather than
+// in any in-memory JS state. This is deliberate: in-memory state (a Map on
+// `window`, or a property on the kernel connection object) resets on every
+// full page reload, but autosave can persist a replayed output to disk
+// BETWEEN two reloads — so a memory-only "since" marker causes the same
+// output to be replayed and re-appended on the next reload, double-
+// counting it. Cell metadata is the one thing guaranteed to be consistent
+// with whatever's actually on disk, because it's saved right alongside the
+// outputs it's tracking, and reloaded right alongside them too.
+const LAST_SEQ_METADATA_KEY = 'missedOutputLastSeq';
+function cellLastSeq(cell) {
+    const v = cell.model.getMetadata(LAST_SEQ_METADATA_KEY);
+    return typeof v === 'number' ? v : 0;
+}
+function setCellLastSeq(cell, seq) {
+    cell.model.setMetadata(LAST_SEQ_METADATA_KEY, seq);
+}
+function toOutput(msg_type, content) {
+    var _a, _b, _c, _d;
+    switch (msg_type) {
+        case 'stream':
+            return { output_type: 'stream', name: content.name, text: content.text };
+        case 'execute_result':
+            return {
+                output_type: 'execute_result',
+                data: content.data,
+                metadata: (_a = content.metadata) !== null && _a !== void 0 ? _a : {},
+                execution_count: (_b = content.execution_count) !== null && _b !== void 0 ? _b : null
+            };
+        case 'display_data':
+            return {
+                output_type: 'display_data',
+                data: content.data,
+                metadata: (_c = content.metadata) !== null && _c !== void 0 ? _c : {}
+            };
+        case 'error':
+            return {
+                output_type: 'error',
+                ename: content.ename,
+                evalue: content.evalue,
+                traceback: (_d = content.traceback) !== null && _d !== void 0 ? _d : []
+            };
+        default:
+            return null;
+    }
+}
+async function fetchMissed(kernelId, sinceSeq) {
+    var _a, _b;
+    const settings = ServerConnection.makeSettings();
+    const url = URLExt.join(settings.baseUrl, 'api', 'kernels', kernelId, 'missed_output');
+    const fullUrl = url + `?since_seq=${sinceSeq}`;
+    const response = await ServerConnection.makeRequest(fullUrl, {}, settings);
+    if (!response.ok) {
+        console.warn('missed-output-replay: fetch failed', response.status);
+        return { messages: [], pending_executions: [] };
+    }
+    const data = await response.json();
+    return { messages: (_a = data.messages) !== null && _a !== void 0 ? _a : [], pending_executions: (_b = data.pending_executions) !== null && _b !== void 0 ? _b : [] };
+}
+async function replayForPanel(panel) {
+    var _a;
+    const kernel = (_a = panel.sessionContext.session) === null || _a === void 0 ? void 0 : _a.kernel;
+    if (!kernel) {
+        return;
+    }
+    const kernelId = kernel.id;
+    const inFlight = inFlightMap();
+    const existing = inFlight.get(kernelId);
+    if (existing) {
+        return existing;
+    }
+    const promise = doReplay(panel, kernelId);
+    inFlight.set(kernelId, promise);
+    try {
+        await promise;
+    }
+    finally {
+        inFlight.delete(kernelId);
+    }
+}
+async function doReplay(panel, kernelId) {
+    var _a;
+    // Always ask the server for everything it still has buffered — the
+    // buffer is small and bounded, and per-cell metadata (not this fetch
+    // window) is what decides what actually gets (re-)applied. See
+    // cellLastSeq's doc comment for why.
+    let missed;
+    let pending;
+    try {
+        const response = await fetchMissed(kernelId, 0);
+        missed = response.messages;
+        pending = response.pending_executions;
+    }
+    catch (err) {
+        console.warn('missed-output-replay: request error', err);
+        return;
+    }
+    if (!missed.length && !pending.length) {
+        return;
+    }
+    const model = panel.content.model;
+    if (!model) {
+        return;
+    }
+    // Build a cellId -> cell widget lookup once per replay batch.
+    //
+    // NOTE: `instanceof CodeCell` narrowing is deliberately avoided here.
+    // With certain dependency resolutions, yarn can end up with two
+    // structurally-identical-but-nominally-distinct copies of
+    // @jupyterlab/cells in the tree (e.g. one hoisted, one nested under a
+    // different package's own dependency range), and TypeScript then
+    // collapses `Cell<ICellModel> & CodeCell` to `never` on private-field
+    // collision. Checking model.type instead avoids relying on class
+    // identity altogether — cheaper and just as correct for our purposes.
+    const cellById = new Map();
+    for (const widget of panel.content.widgets) {
+        if (widget.model.type === 'code') {
+            cellById.set(widget.model.id, widget);
+        }
+    }
+    // Group by cell so each cell's own persisted "last applied seq" gates
+    // exactly its own messages — a cell that's already up to date from disk
+    // is left untouched even if other cells in the same batch have new output.
+    const byCell = new Map();
+    for (const m of missed) {
+        let group = byCell.get(m.cell_id);
+        if (!group) {
+            group = [];
+            byCell.set(m.cell_id, group);
+        }
+        group.push(m);
+    }
+    // Snapshot (COPY, not the live Set) BEFORE adopting anything below.
+    // adoptPendingExecution mutates the real sentMsgIds Set in place so
+    // FUTURE polls correctly treat the adopted msg_id as natively handled —
+    // but that's a reference, not a copy, so reading sentMsgIds.get(kernelId)
+    // AFTER adoption in this same pass would already reflect that mutation,
+    // making the catch-up loop below skip the very messages this adoption
+    // just cleared the cell to make room for. Confirmed live 2026-07-09: this
+    // is exactly why replay silently applied zero messages on the very poll
+    // tick that adopted a pending execution.
+    const sentForKernel = new Set((_a = sentMsgIds.get(kernelId)) !== null && _a !== void 0 ? _a : []);
+    // Adopt still-running executions BEFORE applying catch-up output below —
+    // adoption clears the target cell's output area (see adoptPendingExecution
+    // for why), so it must happen first or it would wipe out output the loop
+    // below just applied.
+    for (const { msg_id, cell_id } of pending) {
+        const cell = cellById.get(cell_id);
+        if (cell) {
+            adoptPendingExecution(panel, kernelId, cell, msg_id);
+        }
+    }
+    let totalAppended = 0;
+    for (const [cellId, msgs] of byCell) {
+        const cell = cellById.get(cellId);
+        if (!cell) {
+            continue; // cell no longer present (deleted/reordered) — nothing to attach to
+        }
+        const already = cellLastSeq(cell);
+        let maxSeq = already;
+        let appended = 0;
+        for (const m of msgs) {
+            if (m.seq <= already) {
+                continue; // already on disk from a prior save — do not double-apply
+            }
+            if (sentForKernel === null || sentForKernel === void 0 ? void 0 : sentForKernel.has(m.parent_msg_id)) {
+                // This page sent that execute_request itself — JupyterLab's native
+                // future-based routing already delivered (or is delivering) this
+                // output to the cell. Still bump maxSeq so we don't keep re-checking
+                // it on every poll tick, but never append it ourselves.
+                maxSeq = Math.max(maxSeq, m.seq);
+                continue;
+            }
+            maxSeq = Math.max(maxSeq, m.seq);
+            if (m.msg_type === 'clear_output') {
+                cell.outputArea.model.clear();
+                continue;
+            }
+            const output = toOutput(m.msg_type, m.content);
+            if (output) {
+                cell.outputArea.model.add(output);
+                appended++;
+            }
+        }
+        if (maxSeq > already) {
+            setCellLastSeq(cell, maxSeq);
+        }
+        totalAppended += appended;
+    }
+    if (totalAppended) {
+        console.log(`missed-output-replay: restored ${totalAppended} output message(s) for kernel ${kernelId}`);
+    }
+}
+// The iopubMessage-triggered replay (above) handles the common case with
+// near-zero latency. This interval is only a SAFETY NET for the rare gap —
+// e.g. a message arriving on a channel this listener attached to slightly
+// late, or any other missed signal — so it can be slow; it is deliberately
+// not the primary delivery path anymore.
+const POLL_INTERVAL_MS = 8000;
+const pollIntervals = new Map();
+function startPolling(panel) {
+    stopPolling(panel);
+    const id = window.setInterval(() => {
+        void replayForPanel(panel);
+    }, POLL_INTERVAL_MS);
+    pollIntervals.set(panel, id);
+}
+function stopPolling(panel) {
+    const id = pollIntervals.get(panel);
+    if (id !== undefined) {
+        window.clearInterval(id);
+        pollIntervals.delete(panel);
+    }
+    const timer = immediateReplayTimers.get(panel);
+    if (timer !== undefined) {
+        window.clearTimeout(timer);
+        immediateReplayTimers.delete(panel);
+    }
+}
+const plugin = {
+    id: 'jupyterlab-missed-output-replay:plugin',
+    description: 'Replay kernel output missed while the page was reloading or disconnected',
+    autoStart: true,
+    requires: [INotebookTracker],
+    activate: (app, tracker) => {
+        console.log('jupyterlab-missed-output-replay activated');
+        tracker.widgetAdded.connect((_sender, panel) => {
+            panel.sessionContext.ready
+                .then(() => {
+                // The kernel we attached to may already have been running before
+                // this page existed — that's exactly the case to recover.
+                trackSentRequests(panel);
+                void replayForPanel(panel);
+                startPolling(panel);
+            })
+                .catch(() => {
+                /* session never became ready — nothing to replay */
+            });
+            // Kernel can also change (restart, or attaching later) — re-check then.
+            panel.sessionContext.kernelChanged.connect(() => {
+                trackSentRequests(panel);
+                void replayForPanel(panel);
+                startPolling(panel);
+            });
+            panel.disposed.connect(() => stopPolling(panel));
+        });
+        // Force-save the instant a cell starts executing, rather than waiting
+        // on JupyterLab's periodic autosave (defaults to every 120s). Confirmed
+        // live: a refresh well inside that window reloads the notebook from
+        // disk with the cell that was ACTUALLY running still missing (or still
+        // showing stale/empty content) — a different cell id than the one the
+        // server-side buffer recorded output against, so replay correctly finds
+        // no match and correctly does nothing. Persisting on execution start
+        // means the cell id (and code) that matters is on disk within
+        // milliseconds of Run being pressed, not up to two minutes later.
+        const saveInFlight = new WeakSet();
+        NotebookActions.executionScheduled.connect((_sender, args) => {
+            const panel = tracker.find(p => p.content === args.notebook);
+            if (!panel || saveInFlight.has(panel)) {
+                return;
+            }
+            saveInFlight.add(panel);
+            panel.context
+                .save()
+                .catch(err => console.warn('missed-output-replay: force-save failed', err))
+                .finally(() => saveInFlight.delete(panel));
+        });
+    }
+};
+export default plugin;

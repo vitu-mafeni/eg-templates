@@ -1,5 +1,5 @@
 # ============================================================
-# Enterprise Gateway kernelspecs image  — tag: vitu1/enterprise-gateway-kernelspecs:1.0.2
+# Enterprise Gateway kernelspecs image  — tag: vitu1/enterprise-gateway-kernelspecs:1.0.3
 # Contains 9 hardware-agnostic kernel profiles:
 #
 #   CPU:
@@ -12,7 +12,8 @@
 #     tf-gpu-quarter       — TensorFlow 25% mem / 25% cores
 #     tf-gpu-half          — TensorFlow 50% mem / 50% cores
 #
-#   GPU dedicated (1 full physical GPU):
+#   GPU dedicated (defaults to 1 full physical GPU; also accepts dynamic
+#   KERNEL_GPU_MEM_PERCENTAGE / KERNEL_GPU_CORES for custom profiles):
 #     pytorch-gpu-dedicated
 #     tf-gpu-dedicated
 #
