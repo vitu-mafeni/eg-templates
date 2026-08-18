@@ -1,0 +1,19 @@
+FROM elyra/kernel-py:3.2.3
+
+LABEL maintainer="vitu1" \
+      org.opencontainers.image.title="EG general Python ML kernel" \
+      org.opencontainers.image.version="3.2.3"
+
+USER root
+
+RUN pip install --no-cache-dir \
+        scikit-learn xgboost lightgbm pandas numpy scipy matplotlib
+
+RUN python - <<'EOF'
+import sklearn, xgboost, lightgbm
+print(f"scikit-learn {sklearn.__version__}")
+print(f"xgboost {xgboost.__version__}")
+print(f"lightgbm {lightgbm.__version__}")
+EOF
+
+USER $NB_UID

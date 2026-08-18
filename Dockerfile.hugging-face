@@ -1,0 +1,25 @@
+FROM elyra/kernel-py:3.2.3
+
+LABEL maintainer="vitu1" \
+      org.opencontainers.image.title="EG Hugging Face Transformers GPU kernel" \
+      org.opencontainers.image.version="3.2.3-cu121" \
+      cuda.version="12.1"
+
+USER root
+
+# Two separate installs, not one — `--index-url` replaces the default index
+# for the WHOLE pip command it's given in, not just the package next to it.
+# `transformers accelerate datasets tokenizers` don't exist on PyTorch's own
+# wheel index, so folding them into the same `pip install` as torch fails
+# with "Could not find a version that satisfies the requirement transformers
+# (from versions: none)" — confirmed live when testing this exact Dockerfile.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu121 && \
+    pip install --no-cache-dir transformers accelerate datasets tokenizers
+
+RUN python - <<'EOF'
+import torch, transformers
+print(f"torch {torch.__version__}  cuda_available={torch.cuda.is_available()}")
+print(f"transformers {transformers.__version__}")
+EOF
+
+USER $NB_UID
