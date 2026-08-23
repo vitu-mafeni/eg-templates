@@ -45,6 +45,37 @@ spec:
     emptyDir: {}
   - name: kernel-launcher-override
     emptyDir: {}
+  {% if kernel_vscode_enabled is defined and kernel_vscode_enabled == 1 or kernel_terminal_enabled is defined and kernel_terminal_enabled == 1 %}
+  # hostPath keyed by kernel_id, NOT emptyDir — an emptyDir's host-side path
+  # is tied to the pod's own UID (/var/lib/kubelet/pods/<POD-UID>/volumes/...),
+  # which is different on every restore (a restore always creates a new pod).
+  # CRIU dumps a container's full mount table, and for THIS mount — an
+  # "external" bind mount, not part of the container's own rootfs — it never
+  # captures the file contents, only the fact that something is externally
+  # mounted there; restoring it just needs cri-o to supply a matching source
+  # path, which it can't do for an emptyDir since that path doesn't exist yet
+  # under the brand-new restored pod's UID. kernel_id itself IS preserved
+  # across restore (frozen in the EG launcher, reused rather than
+  # regenerated), so a path derived purely from it is identical at
+  # checkpoint and restore time regardless of which node either lands on.
+  # DirectoryOrCreate so a fresh kernel_id (or a node that's never seen one)
+  # still mounts successfully as an empty directory.
+  - name: remote-dev
+    hostPath:
+      path: "/opt/remote-dev-instances/{{ kernel_id }}"
+      type: DirectoryOrCreate
+  # Node-local warm cache for code-server/ttyd, populated by the
+  # remote-dev-cache-warmer DaemonSet so provision-code-server/provision-ttyd
+  # below can `cp` instead of re-downloading from the internet on every pod
+  # start/restore. DirectoryOrCreate so a node the warmer hasn't reached yet
+  # (or never will) still mounts successfully as an empty dir — the init
+  # containers below fall back to a direct install/download whenever the
+  # cache isn't there, so this is additive, never a hard dependency.
+  - name: node-remote-dev-cache
+    hostPath:
+      path: /opt/remote-dev-cache
+      type: DirectoryOrCreate
+  {% endif %}
   {% if kernel_workspace_pvc_name is defined %}
   - name: "{{ kernel_workspace_pvc_name }}"
     persistentVolumeClaim:
@@ -116,9 +147,165 @@ spec:
     volumeMounts:
     - name: kernel-launcher-override
       mountPath: /kernel-launcher-override
+  {% if kernel_vscode_enabled is defined and kernel_vscode_enabled == 1 %}
+  # Only present when this profile actually has VS Code enabled. Runs the
+  # official code-server installer's "standalone" method (a prebuilt release
+  # tarball, no compilation) via curlimages/curl rather than {{ kernel_image }}
+  # itself, so it never depends on that image having curl/wget at all.
+  - name: provision-code-server
+    image: curlimages/curl:8.11.1
+    # remote-dev is a hostPath (see the volume's own comment above), and
+    # DirectoryOrCreate creates a fresh one as root:root 0755 on the node —
+    # this container would otherwise run as the pod's own non-root kernel_uid
+    # (from the pod's securityContext) and be unable to write into it at all.
+    securityContext:
+      runAsUser: 0
+      runAsGroup: 0
+    command: ["sh", "-c"]
+    args:
+      - |
+        set -e
+        # install.sh caches its download under ~/.cache — $HOME isn't set to
+        # anything writable for the non-root UID this pod runs as, so
+        # without this it tries to mkdir "//.cache" and fails. /tmp is
+        # always writable regardless of UID.
+        export HOME=/tmp
+        # Fast path: remote-dev-cache-warmer already installed code-server
+        # on this node — just copy it in (milliseconds) instead of hitting
+        # the network. .ready is written last by the warmer, after the
+        # binary itself is confirmed present, so its existence alone is
+        # enough to trust the copy.
+        if [ -f /cache/.ready ] && [ -x /cache/code-server/bin/code-server ]; then
+          cp -a /cache/code-server/. /opt/remote-dev/
+          # code-server's standalone install lays out two top-level symlinks
+          # (bin/code-server, lib/node) as ABSOLUTE paths into wherever
+          # install.sh originally ran — under /cache here — so `cp -a`
+          # carries the same /cache/... targets along, dangling everywhere
+          # else including the main "k" container, which never mounts
+          # /cache. Rewrite every dangling symlink under the copied tree
+          # from its old /cache/code-server/... target to the equivalent
+          # path under /opt/remote-dev/... — the whole versioned
+          # subdirectory was copied alongside it, so the rewritten target
+          # resolves, and every script's own relative path math is
+          # undisturbed.
+          find /opt/remote-dev -type l | while IFS= read -r link; do
+            target=$(readlink "$link")
+            case "$target" in
+              /cache/code-server/*)
+                ln -sf "/opt/remote-dev/${target#/cache/code-server/}" "$link"
+                ;;
+            esac
+          done
+        else
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 https://code-server.dev/install.sh \
+            | sh -s -- --method=standalone --prefix=/opt/remote-dev
+        fi
+    volumeMounts:
+    - name: remote-dev
+      mountPath: /opt/remote-dev
+    - name: node-remote-dev-cache
+      # Must match the warmer's own mountPath exactly — code-server's
+      # install.sh bakes bin/code-server as a symlink to an ABSOLUTE path
+      # under wherever it was mounted when install.sh ran, so a different
+      # mountPath here leaves the symlink pointing at a path that doesn't
+      # exist in THIS container, making the -x check above always fail.
+      mountPath: /cache
+      readOnly: true
+  {% endif %}
+  {% if kernel_terminal_enabled is defined and kernel_terminal_enabled == 1 %}
+  # Only present when this profile actually has the browser terminal
+  # enabled — same reasoning as provision-code-server above, for ttyd
+  # instead. ttyd's own release is a single genuinely static binary (no
+  # shared library dependencies at all), so this just downloads it directly
+  # rather than needing an installer script.
+  - name: provision-ttyd
+    image: curlimages/curl:8.11.1
+    securityContext:
+      runAsUser: 0
+      runAsGroup: 0
+    command: ["sh", "-c"]
+    args:
+      - |
+        set -e
+        mkdir -p /opt/remote-dev/bin
+        if [ -f /cache/.ready ] && [ -x /cache/ttyd ]; then
+          cp /cache/ttyd /opt/remote-dev/bin/ttyd
+          chmod 755 /opt/remote-dev/bin/ttyd
+        else
+          # -L is required: GitHub Releases asset URLs 302-redirect to an
+          # S3-backed URL — without it curl just writes the (empty) redirect
+          # response to -o and still exits 0, leaving a 0-byte "binary".
+          curl -sSfkL --retry 5 --retry-all-errors --retry-delay 2 \
+            -o /opt/remote-dev/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
+          chmod 755 /opt/remote-dev/bin/ttyd
+        fi
+    volumeMounts:
+    - name: remote-dev
+      mountPath: /opt/remote-dev
+    - name: node-remote-dev-cache
+      mountPath: /cache
+      readOnly: true
+  {% endif %}
   containers:
   - image: "{{ kernel_image }}"
     name: k
+    {% if kernel_vscode_enabled is defined and kernel_vscode_enabled == 1 %}
+    # Required for checkpointing to work at all with VS Code enabled:
+    # code-server's bundled Node/libuv creates an io_uring instance at
+    # startup, which CRIU cannot dump ("Unknown shit 600", aborts the whole
+    # checkpoint). Denying the io_uring syscalls at the seccomp layer forces
+    # libuv's documented fallback, which CRIU can dump. Every other syscall,
+    # including CUDA/GPU ioctls, stays unrestricted. Requires
+    # block-io-uring.json to exist on every node this pod can schedule to,
+    # under the kubelet's seccomp profile root (typically
+    # /var/lib/kubelet/seccomp/profiles/block-io-uring.json) — a missing
+    # profile fails pod scheduling with a clear error, never silently falls
+    # back to Unconfined.
+    securityContext:
+      seccompProfile:
+        type: Localhost
+        localhostProfile: profiles/block-io-uring.json
+    {% endif %}
+    {% if kernel_vscode_enabled is defined and kernel_vscode_enabled == 1 or kernel_terminal_enabled is defined and kernel_terminal_enabled == 1 %}
+    # Absent entirely unless vscode/terminal is enabled — a normal kernel
+    # keeps running the image's own default entrypoint untouched.
+    # Backgrounds whichever of code-server/ttyd was staged by the init
+    # containers above, then execs into the image's normal entrypoint —
+    # tini still ends up as the container's actual PID 1 once exec replaces
+    # this shell, so it reaps the backgrounded process(es) exactly like it
+    # would any other orphan.
+    command: ["sh", "-c"]
+    args:
+      - |
+        {% if kernel_vscode_enabled is defined and kernel_vscode_enabled == 1 %}
+        # UV_USE_IO_URING=0 is libuv's documented opt-out, must be set
+        # before code-server starts (the io_uring mapping is created at
+        # process startup and can't be removed afterward). Separately,
+        # VS Code's own file watcher holds inotify watches CRIU's fsnotify
+        # dump code can't resolve back to a path on the workspace
+        # directory, aborting the checkpoint the same way — disabling the
+        # watcher entirely removes those registrations before code-server
+        # ever starts. Merged into settings.json rather than
+        # only-written-if-missing, since code-server auto-creates this file
+        # on its own first run, so a persistent workspace that already had
+        # one prior launch has the file without our key already. No
+        # JSON-capable interpreter is assumed present, so the merge uses
+        # only sh/grep/sed/tac.
+        VSCODE_SETTINGS=/home/jovyan/.local/share/code-server/User/settings.json
+        mkdir -p "$(dirname "$VSCODE_SETTINGS")"
+        if [ ! -s "$VSCODE_SETTINGS" ]; then
+          printf '{\n  "files.watcherExclude": { "**": true }\n}\n' > "$VSCODE_SETTINGS"
+        elif ! grep -q '"files.watcherExclude"' "$VSCODE_SETTINGS"; then
+          tac "$VSCODE_SETTINGS" | sed '0,/}/ s/}/,"files.watcherExclude":{"**":true}}/' | tac > "$VSCODE_SETTINGS.tmp" \
+            && mv "$VSCODE_SETTINGS.tmp" "$VSCODE_SETTINGS"
+        fi
+        (UV_USE_IO_URING=0 /opt/remote-dev/bin/code-server --bind-addr 0.0.0.0:8890 --auth none &)
+        {% endif %}
+        {% if kernel_terminal_enabled is defined and kernel_terminal_enabled == 1 %}
+        (/opt/remote-dev/bin/ttyd -p 7681 -W bash &)
+        {% endif %}
+        exec /usr/bin/tini -s -- /bin/sh -c /usr/local/bin/bootstrap-kernel.sh
+    {% endif %}
     env: []
     resources:
       limits:
@@ -140,6 +327,10 @@ spec:
     - name: kernel-launcher-override
       mountPath: /usr/local/bin/kernel-launchers/python/scripts/launch_ipykernel.py
       subPath: launch_ipykernel.py
+    {% if kernel_vscode_enabled is defined and kernel_vscode_enabled == 1 or kernel_terminal_enabled is defined and kernel_terminal_enabled == 1 %}
+    - name: remote-dev
+      mountPath: /opt/remote-dev
+    {% endif %}
     {% if kernel_workspace_pvc_name is defined %}
     - name: "{{ kernel_workspace_pvc_name }}"
       mountPath: /home/jovyan
